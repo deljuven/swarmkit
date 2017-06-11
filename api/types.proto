@@ -706,9 +706,14 @@ message SpreadOver {
 	// spreading.
 }
 
+message ImageDependency {
+	string image_descriptor = 1; // label descriptor
+}
+
 message PlacementPreference {
 	oneof Preference {
 		SpreadOver spread = 1;
+		ImageDependency image = 2;
 	}
 }
 
