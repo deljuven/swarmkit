@@ -57,6 +57,11 @@ service Dispatcher { // maybe dispatch, al likes this
 	rpc Assignments(AssignmentsRequest) returns (stream AssignmentsMessage) {
 		option (docker.protobuf.plugin.tls_authorization) = { roles: "swarm-worker" roles: "swarm-manager" };
 	};
+
+	// RootFSSync sync rootfs of the node to manager
+	rpc RootFSSync(RootFSSyncRequest) returns (RootFSSyncMessage) {
+		option (docker.protobuf.plugin.tls_authorization) = { roles: "swarm-worker" roles: "swarm-manager" };
+	}
 }
 
 // SessionRequest starts a session.
@@ -211,4 +216,18 @@ message AssignmentsMessage {
 
 	// AssignmentChange is a set of changes to apply on this node.
 	repeated AssignmentChange changes = 4;
+}
+
+message RootFSSyncRequest {
+
+	string session_id = 1;
+
+	repeated string appends = 2;
+
+	repeated string removals = 3;
+
+}
+
+message RootFSSyncMessage {
+	// NONE as updateTaskStatus
 }

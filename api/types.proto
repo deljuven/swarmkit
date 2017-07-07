@@ -707,7 +707,7 @@ message SpreadOver {
 }
 
 message ImageDependency {
-	string image_descriptor = 1; // label descriptor
+	uint64 replica_descriptor = 1; // replica descriptor, declaring at least how many different replica is needed
 }
 
 message PlacementPreference {

@@ -116,6 +116,7 @@ service Control {
 	rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse) {
 		option (docker.protobuf.plugin.tls_authorization) = { roles: "swarm-manager" };
 	}
+
 }
 
 message GetNodeRequest {
