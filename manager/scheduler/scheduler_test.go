@@ -2203,3 +2203,249 @@ func benchScheduler(b *testing.B, nodes, tasks int, networkConstraints bool) {
 		s.Close()
 	}
 }
+
+
+func TestImagePreferences(t *testing.T) {
+	ctx := context.Background()
+	initialNodeSet := []*api.Node{
+		{
+			ID: "id0",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az1",
+						"rack": "rack1",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e8,
+				},
+			},
+		},
+		{
+			ID: "id1",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az1",
+						"rack": "rack1",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+		{
+			ID: "id2",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az2",
+						"rack": "rack1",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+		{
+			ID: "id3",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az2",
+						"rack": "rack1",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+		{
+			ID: "id4",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az2",
+						"rack": "rack1",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+		{
+			ID: "id5",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az2",
+						"rack": "rack2",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+		{
+			ID: "id6",
+			Status: api.NodeStatus{
+				State: api.NodeStatus_READY,
+			},
+			Spec: api.NodeSpec{
+				Annotations: api.Annotations{
+					Labels: map[string]string{
+						"az":   "az2",
+						"rack": "rack2",
+					},
+				},
+			},
+			Description: &api.NodeDescription{
+				Resources: &api.Resources{
+					NanoCPUs:    1e9,
+					MemoryBytes: 1e9,
+				},
+			},
+		},
+	}
+
+	taskTemplate1 := &api.Task{
+		DesiredState: api.TaskStateRunning,
+		ServiceID:    "service1",
+		Spec: api.TaskSpec{
+			Runtime: &api.TaskSpec_Container{
+				Container: &api.ContainerSpec{
+					Image: "v:1",
+				},
+			},
+			Placement: &api.Placement{
+				Preferences: []*api.PlacementPreference{
+					{
+						Preference: &api.PlacementPreference_Image{
+							Image: &api.ImageDependency{
+								ReplicaDescriptor: 2,
+							},
+						},
+					},
+				},
+			},
+			Resources: &api.ResourceRequirements{
+				Reservations: &api.Resources{
+					NanoCPUs: 1e8,
+					MemoryBytes: 2e8,
+				},
+			},
+		},
+		Status: api.TaskStatus{
+			State: api.TaskStatePending,
+		},
+	}
+
+	s := store.NewMemoryStore(nil)
+	assert.NotNil(t, s)
+	defer s.Close()
+
+	t1Instances := 12
+
+	err := s.Update(func(tx store.Tx) error {
+		// Prepoulate nodes
+		for _, n := range initialNodeSet {
+			assert.NoError(t, store.CreateNode(tx, n))
+		}
+
+		// Prepopulate tasks from template 1
+		for i := 0; i != t1Instances; i++ {
+			taskTemplate1.ID = fmt.Sprintf("t1id%d", i)
+			if i == 10 {
+				taskTemplate1.NodeID = "id4"
+				taskTemplate1.Status = api.TaskStatus{
+					State:api.TaskStateRunning,
+				}
+			}
+			if i == 11 {
+				taskTemplate1.NodeID = "id5"
+				taskTemplate1.Status = api.TaskStatus{
+					State:api.TaskStateRunning,
+				}
+			}
+			assert.NoError(t, store.CreateTask(tx, taskTemplate1))
+		}
+		return nil
+	})
+	assert.NoError(t, err)
+
+	scheduler := New(s)
+
+	watch, cancel := state.Watch(s.WatchQueue(), state.EventUpdateTask{})
+	defer cancel()
+
+	go func() {
+		assert.NoError(t, scheduler.Run(ctx))
+	}()
+	defer scheduler.Stop()
+
+	t1Assignments := make(map[string]int)
+	t1Assignments["id4"]++
+	t1Assignments["id5"]++
+	for i := 0; i != t1Instances-2; i++ {
+		assignment := watchAssignment(t, watch)
+		if !strings.HasPrefix(assignment.ID, "t1") {
+			t.Fatal("got assignment for different kind of task")
+		}
+		t1Assignments[assignment.NodeID]++
+	}
+
+	assert.Len(t, t1Assignments, 3)
+
+	// There should be no tasks assigned to id0 because it doesn't meet the
+	// resource requirements.
+	assert.Equal(t, 0, t1Assignments["id0"])
+
+	// There should be 5 tasks assigned to id1 because half of the 12 tasks
+	// should ideally end up in az1, but id1 can only accommodate 5 due to
+	// resource requirements.
+	assert.Equal(t, 2, t1Assignments["id1"])
+	assert.Equal(t, 5, t1Assignments["id4"])
+	assert.Equal(t, 5, t1Assignments["id5"])
+}

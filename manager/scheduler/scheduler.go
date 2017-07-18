@@ -9,6 +9,7 @@ import (
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"golang.org/x/net/context"
+	"container/heap"
 )
 
 const (
@@ -26,6 +27,22 @@ type schedulingDecision struct {
 	new *api.Task
 }
 
+type Strategy int64
+
+const (
+	None Strategy = 0
+
+	SpreadOver Strategy = 64
+
+	ImageBase Strategy = 128
+
+	// flag for rootfs-base(0) or image-based(1) or service-based(2)
+	ROOTSF_BASED  = 0
+	IMAGE_BASED   = 1
+	SERVICE_BASED = 2
+	SUPPORT_FLAG  = ROOTSF_BASED
+)
+
 // Scheduler assigns tasks to nodes.
 type Scheduler struct {
 	store           *store.MemoryStore
@@ -40,6 +57,19 @@ type Scheduler struct {
 	stopChan chan struct{}
 	// doneChan is closed when the state machine terminates
 	doneChan chan struct{}
+
+	// to alloc task replica mapping to nodes
+	toAllocReplicas map[string]int
+	// change when task updated, created and deleted
+	serviceMapping map[string]map[string]int
+
+	// rootfs to node mapping
+	rootfsMapping map[string]map[string]int
+	// image to node mapping
+	imageMapping map[string]map[string]int
+
+	// mapping from service to service or img or rootfs
+	factorKeys map[string][]string
 }
 
 // New creates a new scheduler.
@@ -52,6 +82,11 @@ func New(store *store.MemoryStore) *Scheduler {
 		stopChan:         make(chan struct{}),
 		doneChan:         make(chan struct{}),
 		pipeline:         NewPipeline(),
+		toAllocReplicas:  make(map[string]int),
+		serviceMapping:   make(map[string]map[string]int),
+		rootfsMapping:    make(map[string]map[string]int),
+		imageMapping:     make(map[string]map[string]int),
+		factorKeys:       make(map[string][]string),
 	}
 }
 
@@ -218,6 +253,8 @@ func (s *Scheduler) createTask(ctx context.Context, t *api.Task) int {
 		s.nodeSet.updateNode(nodeInfo)
 	}
 
+	s.updateRunningServReplicas(nodeInfo, t.ServiceID)
+
 	return 0
 }
 
@@ -274,6 +311,8 @@ func (s *Scheduler) updateTask(ctx context.Context, t *api.Task) int {
 		s.nodeSet.updateNode(nodeInfo)
 	}
 
+	s.updateRunningServReplicas(nodeInfo, t.ServiceID)
+
 	return 0
 }
 
@@ -284,6 +323,7 @@ func (s *Scheduler) deleteTask(ctx context.Context, t *api.Task) {
 	if err == nil && nodeInfo.removeTask(t) {
 		s.nodeSet.updateNode(nodeInfo)
 	}
+	s.updateRunningServReplicas(nodeInfo, t.ServiceID)
 }
 
 func (s *Scheduler) createOrUpdateNode(n *api.Node) {
@@ -326,6 +366,7 @@ func (s *Scheduler) processPreassignedTasks(ctx context.Context) {
 		if err == nil && nodeInfo.removeTask(decision.new) {
 			s.nodeSet.updateNode(nodeInfo)
 		}
+		s.updateRunningServReplicas(nodeInfo, decision.new.ServiceID)
 	}
 }
 
@@ -333,6 +374,9 @@ func (s *Scheduler) processPreassignedTasks(ctx context.Context) {
 func (s *Scheduler) tick(ctx context.Context) {
 	tasksByCommonSpec := make(map[string]map[string]*api.Task)
 	schedulingDecisions := make(map[string]schedulingDecision, len(s.unassignedTasks))
+	tasksForImageBySpec := make(map[string]map[string]*api.Task)
+	taskGroupKeys := make(map[string]string)
+	tasks := make(map[string]*api.Task)
 
 	for taskID, t := range s.unassignedTasks {
 		if t == nil || t.NodeID != "" {
@@ -340,27 +384,47 @@ func (s *Scheduler) tick(ctx context.Context) {
 			delete(s.unassignedTasks, taskID)
 			continue
 		}
+		tasks[taskID] = t
 
 		// Group common tasks with common specs by marshalling the spec
 		// into taskKey and using it as a map key.
 		// TODO(aaronl): Once specs are versioned, this will allow a
 		// much more efficient fast path.
-		fieldsToMarshal := api.Task{
-			ServiceID: t.ServiceID,
-			Spec:      t.Spec,
-		}
-		marshalled, err := fieldsToMarshal.Marshal()
-		if err != nil {
-			panic(err)
-		}
-		taskGroupKey := string(marshalled)
+		taskGroupKey := getTaskGroupKey(t)
+		taskGroupKeys[t.ID] = taskGroupKey
 
-		if tasksByCommonSpec[taskGroupKey] == nil {
-			tasksByCommonSpec[taskGroupKey] = make(map[string]*api.Task)
+		var prefs []*api.PlacementPreference
+		if t.Spec.Placement != nil {
+			prefs = t.Spec.Placement.Preferences
 		}
-		tasksByCommonSpec[taskGroupKey][taskID] = t
+
+		strategy := None
+		for _, pref := range prefs {
+			img := pref.GetImage()
+			if img != nil {
+				strategy = ImageBase
+				s.toAllocReplicas[t.ServiceID] = int(img.ReplicaDescriptor)
+			}
+		}
+
+		if strategy == ImageBase {
+			if tasksForImageBySpec[taskGroupKey] == nil {
+				tasksForImageBySpec[taskGroupKey] = make(map[string]*api.Task)
+			}
+			tasksForImageBySpec[taskGroupKey][t.ID] = t
+		} else {
+			if tasksByCommonSpec[taskGroupKey] == nil {
+				tasksByCommonSpec[taskGroupKey] = make(map[string]*api.Task)
+			}
+			tasksByCommonSpec[taskGroupKey][taskID] = t
+		}
 		delete(s.unassignedTasks, taskID)
 	}
+
+	// first do service with image base strategy,then spread over strategy
+	// for image base, use drf to select suitable nodes, drf return the best fit node per time
+	// so for n tasks, there should be n drf calls
+	s.scheduleImageBaseTasks(ctx, tasksForImageBySpec, tasks, taskGroupKeys, schedulingDecisions)
 
 	for _, taskGroup := range tasksByCommonSpec {
 		s.scheduleTaskGroup(ctx, taskGroup, schedulingDecisions)
@@ -374,10 +438,190 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if err == nil && nodeInfo.removeTask(decision.new) {
 			s.nodeSet.updateNode(nodeInfo)
 		}
+		s.updateRunningServReplicas(nodeInfo, decision.new.ServiceID)
 
 		// enqueue task for next scheduling attempt
 		s.enqueue(decision.old)
 	}
+}
+
+func getTaskGroupKey(t *api.Task) (taskGroupKey string) {
+	fieldsToMarshal := api.Task{
+		ServiceID: t.ServiceID,
+		Spec:      t.Spec,
+	}
+	marshalled, err := fieldsToMarshal.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	taskGroupKey = string(marshalled)
+	return
+}
+
+func (s *Scheduler) updateFactorKeys(serviceId string, factors []string) {
+	if _, ok := s.factorKeys[serviceId]; ok {
+		if factors == nil {
+			delete(s.factorKeys, serviceId)
+			return
+		}
+	}
+	s.factorKeys[serviceId] = factors
+}
+
+// update service-node mapping after nodeinfo updating task status
+func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, serviceId string) {
+	_, ok := s.serviceMapping[serviceId]
+	if nodeInfo.ActiveTasksCountByService[serviceId] > 0 {
+		if !ok {
+			s.serviceMapping[serviceId] = make(map[string]int)
+		}
+		if _, ok := s.serviceMapping[serviceId][nodeInfo.ID]; !ok {
+			s.serviceMapping[serviceId][nodeInfo.ID] = 1
+		}
+		if SUPPORT_FLAG == SERVICE_BASED {
+			s.updateFactorKeys(serviceId, []string{serviceId})
+		}
+	} else {
+		if ok {
+			delete(s.serviceMapping[serviceId], nodeInfo.ID)
+			if SUPPORT_FLAG == SERVICE_BASED {
+				s.updateFactorKeys(serviceId, nil)
+			}
+		}
+	}
+	s.toAllocReplicas[serviceId] = len(s.serviceMapping[serviceId])
+}
+
+// TODO image base alloc, should consider dead tasks assignments in preassigned
+// serviceReplicas is used for image-based service, indicating number of image replica needed to be scheduled
+func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[string]map[string]*api.Task, tasks map[string]*api.Task, taskGroupKeys map[string]string, schedulingDecisions map[string]schedulingDecision) int {
+	//tasksByImage := make([]*api.Task, 0)
+	// cause drf change resource usage during calculation, use nodes to copy the nodeset.nodes
+	nodes := make(map[string]NodeInfo)
+	for _, nd := range s.nodeSet.nodes {
+		nodes[nd.ID] = nd
+		for _, taskGroup := range taskGroups {
+			var t *api.Task
+			for _, t = range taskGroup {
+				if _, ok := nd.ActiveTasksCountByService[t.ServiceID]; ok {
+					// a mapping from image-based service to nodeslot counting
+					// TODO later use image-node mapping, nodeImages , to replace this constraint
+					// use service-node mapping at this time
+					if _, ok := s.serviceMapping[t.ServiceID]; !ok {
+						s.serviceMapping[t.ServiceID] = make(map[string]int)
+					}
+					s.serviceMapping[t.ServiceID][nd.ID] = 1
+				}
+				break
+			}
+		}
+	}
+
+	for serviceID := range s.toAllocReplicas {
+		if servReplica, ok := s.serviceMapping[serviceID]; ok {
+			s.toAllocReplicas[serviceID] -= len(servReplica)
+		}
+		if s.toAllocReplicas[serviceID] < 0 {
+			s.toAllocReplicas[serviceID] = 0
+		}
+	}
+
+	specs := make(map[string]api.TaskSpec)
+	taskScheduled := 0
+
+	drfHeap := nodeDRFHeap{}
+	drfHeap.toAllocReplicas = &s.toAllocReplicas
+	drfHeap.factorKeyMapping = &s.factorKeys
+	switch SUPPORT_FLAG {
+	case ROOTSF_BASED:
+		drfHeap.coherenceMapping = &s.rootfsMapping
+	case IMAGE_BASED:
+		drfHeap.coherenceMapping = &s.imageMapping
+	case SERVICE_BASED:
+		drfHeap.coherenceMapping = &s.serviceMapping
+	}
+	for {
+		// init drf heap
+		drfHeap.nodes = make([]DRFNode, 0)
+		for servSpec, taskGroup := range taskGroups {
+			//filter tasks
+			var t *api.Task
+			for _, t = range taskGroup {
+				specs[t.ServiceID] = t.Spec
+				break
+			}
+
+			if t == nil {
+				log.G(ctx).Warnf("no task for taskGroup %v", servSpec)
+				continue
+			}
+
+			s.pipeline.SetTask(t)
+
+			// filter nodes
+			for _, node := range nodes {
+				if s.pipeline.Process(&node) {
+					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, taskGroup)...)
+				}
+			}
+		}
+
+		if len(tasks) == 0 || drfHeap.Len() == 0 {
+			return taskScheduled
+		}
+
+		// get drf result and apply it
+		heap.Init(&drfHeap)
+		fittest, ok := heap.Pop(&drfHeap).(DRFNode)
+		if !ok {
+			log.G(ctx).Errorf("drf heap failed")
+			break
+		}
+
+		nodeID, taskID := fittest.nodeId, fittest.taskId
+		// Skip tasks which were already scheduled because they ended
+		// up in two groups at once.
+		if _, exists := schedulingDecisions[taskID]; exists {
+			continue
+		}
+
+		old := tasks[taskID]
+		// update task and node
+		log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
+		newT := *old
+		newT.NodeID = nodeID
+		newT.Status = api.TaskStatus{
+			State:     api.TaskStateAssigned,
+			Timestamp: ptypes.MustTimestampProto(time.Now()),
+			Message:   "scheduler assigned task to node",
+		}
+		s.allTasks[taskID] = &newT
+
+		nodeInfo, err := s.nodeSet.nodeInfo(nodeID)
+		if err == nil && nodeInfo.addTask(&newT) {
+			s.nodeSet.updateNode(nodeInfo)
+			nodes[nodeID] = nodeInfo
+		}
+
+		s.updateRunningServReplicas(nodeInfo, old.ServiceID)
+
+		schedulingDecisions[taskID] = schedulingDecision{old: old, new: &newT}
+		taskScheduled++
+
+		// remove scheduled task from tasks to rebuild the heap for next iteration
+		delete(tasks, taskID)
+		oldKey := taskGroupKeys[taskID]
+		oldGroup, ok := taskGroups[oldKey]
+		if ok {
+			if len(oldGroup) == 0 {
+				delete(taskGroups, oldKey)
+			} else {
+				delete(oldGroup, taskID)
+			}
+		}
+	}
+
+	return taskScheduled
 }
 
 func (s *Scheduler) applySchedulingDecisions(ctx context.Context, schedulingDecisions map[string]schedulingDecision) (successful, failed []schedulingDecision) {
@@ -403,6 +647,7 @@ func (s *Scheduler) applySchedulingDecisions(ctx context.Context, schedulingDeci
 						if err == nil && nodeInfo.removeTask(decision.new) {
 							s.nodeSet.updateNode(nodeInfo)
 						}
+						s.updateRunningServReplicas(nodeInfo, decision.new.ServiceID)
 						delete(s.allTasks, decision.old.ID)
 
 						continue
@@ -479,6 +724,8 @@ func (s *Scheduler) taskFitNode(ctx context.Context, t *api.Task, nodeID string)
 	if nodeInfo.addTask(&newT) {
 		s.nodeSet.updateNode(nodeInfo)
 	}
+
+	s.updateRunningServReplicas(nodeInfo, t.ServiceID)
 	return &newT
 }
 
@@ -533,7 +780,7 @@ func (s *Scheduler) scheduleTaskGroup(ctx context.Context, taskGroup map[string]
 	}
 
 	tree := s.nodeSet.tree(t.ServiceID, prefs, len(taskGroup), s.pipeline.Process, nodeLess)
-
+	// meaning ? afaik the subtree is just a filter chain for spread, no sub branch, cause each task group having the same service spec, leading to same sub tree
 	s.scheduleNTasksOnSubtree(ctx, len(taskGroup), taskGroup, &tree, schedulingDecisions, nodeLess)
 	if len(taskGroup) != 0 {
 		s.noSuitableNode(ctx, taskGroup, schedulingDecisions)
@@ -621,6 +868,8 @@ func (s *Scheduler) scheduleNTasksOnNodes(ctx context.Context, n int, taskGroup 
 			s.nodeSet.updateNode(nodeInfo)
 			nodes[nodeIter%nodeCount] = nodeInfo
 		}
+
+		s.updateRunningServReplicas(nodeInfo, t.ServiceID)
 
 		schedulingDecisions[taskID] = schedulingDecision{old: t, new: &newT}
 		delete(taskGroup, taskID)

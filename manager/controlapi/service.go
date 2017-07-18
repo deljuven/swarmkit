@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"github.com/docker/swarmkit/manager/scheduler"
 )
 
 var (
@@ -301,8 +302,40 @@ func validateMode(s *api.ServiceSpec) error {
 	m := s.GetMode()
 	switch m.(type) {
 	case *api.ServiceSpec_Replicated:
-		if int64(m.(*api.ServiceSpec_Replicated).Replicated.Replicas) < 0 {
+		replicas := int64(m.(*api.ServiceSpec_Replicated).Replicated.Replicas)
+		if replicas < 0 {
 			return grpc.Errorf(codes.InvalidArgument, "Number of replicas must be non-negative")
+		}
+		// validate image-based preference
+		strategy := scheduler.None
+		if placement := s.Task.Placement; placement != nil {
+			if prefs := placement.Preferences; prefs != nil && len(prefs) > 0 {
+				for _, pref := range prefs {
+					if img := pref.GetImage(); img != nil {
+						switch strategy{
+						case scheduler.None:
+							strategy = scheduler.ImageBase
+							if int64(img.ReplicaDescriptor) < 1 {
+								return grpc.Errorf(codes.InvalidArgument, "Number of image replicas must be positive")
+							}
+							if img.ReplicaDescriptor > uint64(replicas) {
+								return grpc.Errorf(codes.InvalidArgument, "Number of replicas must be bigger than number of image replicas")
+							}
+						case scheduler.ImageBase:
+							return grpc.Errorf(codes.InvalidArgument, "Can not use multiple image-base strategy")
+						case scheduler.SpreadOver:
+							return grpc.Errorf(codes.InvalidArgument, "Can not combine image-base strategy and spreadOver strategy together")
+						}
+					} else if spread := pref.GetSpread(); spread != nil {
+						switch strategy{
+						case scheduler.None:
+							strategy = scheduler.SpreadOver
+						case scheduler.ImageBase:
+							return grpc.Errorf(codes.InvalidArgument, "Can not combine image-base strategy and spreadOver strategy together")
+						}
+					}
+				}
+			}
 		}
 	case *api.ServiceSpec_Global:
 	default:
@@ -462,6 +495,8 @@ func (s *Server) CreateService(ctx context.Context, request *api.CreateServiceRe
 	if err != nil {
 		return nil, err
 	}
+
+	// TODO use docker registry api to search image info
 
 	return &api.CreateServiceResponse{
 		Service: service,
