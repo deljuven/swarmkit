@@ -24,6 +24,7 @@ import (
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager"
 	"github.com/docker/swarmkit/manager/encryption"
+	"github.com/docker/swarmkit/manager/scheduler"
 	"github.com/docker/swarmkit/remotes"
 	"github.com/docker/swarmkit/xnet"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
@@ -131,6 +132,9 @@ type Node struct {
 	manager          *manager.Manager
 	notifyNodeChange chan *api.Node // used to send role updates from the dispatcher api on promotion/demotion
 	unlockKey        []byte
+
+	imageQueryReq  chan *scheduler.RootfsQueryReq
+	imageQueryResp chan *scheduler.RootfsQueryResp
 }
 
 // RemoteAPIAddr returns address on which remote manager api listens.
@@ -174,6 +178,8 @@ func New(c *Config) (*Node, error) {
 		ready:            make(chan struct{}),
 		notifyNodeChange: make(chan *api.Node, 1),
 		unlockKey:        c.UnlockKey,
+		imageQueryReq:    make(chan *scheduler.RootfsQueryReq),
+		imageQueryResp:   make(chan *scheduler.RootfsQueryResp),
 	}
 
 	if n.config.JoinAddr != "" || n.config.ForceNewCluster {
@@ -345,7 +351,10 @@ func (n *Node) run(ctx context.Context) (err error) {
 			}()
 			select {
 			case <-managerReady:
+				n.agent.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
+				n.manager.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
 			case <-workerRole:
+				n.imageQueryReq, n.imageQueryResp = nil, nil
 			}
 			waitRoleCancel()
 		}

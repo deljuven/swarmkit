@@ -12,6 +12,7 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"github.com/docker/swarmkit/manager/scheduler"
 )
 
 const dispatcherRPCTimeout = 5 * time.Second
@@ -97,6 +98,7 @@ func (s *session) run(ctx context.Context, delay time.Duration, description *api
 	go runctx(ctx, s.closed, s.errs, s.watch)
 	go runctx(ctx, s.closed, s.errs, s.listen)
 	go runctx(ctx, s.closed, s.errs, s.logSubscriptions)
+	go runctx(ctx, s.closed, s.errs, s.syncTick)
 
 	close(s.registered)
 }
@@ -410,4 +412,63 @@ func (s *session) close() error {
 	})
 
 	return nil
+}
+
+const SYNC_INTERVAL = 5 * time.Minute
+const SYNC_TIMEOUT = 30 * time.Second
+
+func (s *session) syncTick(ctx context.Context) error {
+	log.G(ctx).Debugf("(*session).syncTick for sync image or rootfs to manager")
+	client := api.NewDispatcherClient(s.conn.ClientConn)
+	// every 5 minute try to send out a sync
+	interval := time.NewTimer(SYNC_INTERVAL)
+	defer interval.Stop()
+
+	var fn func(context.Context) ([]string, []string, error)
+	switch scheduler.SUPPORT_FLAG {
+	case scheduler.ROOTSF_BASED:
+		fn = s.agent.getRootfsUpdates
+	case scheduler.IMAGE_BASED:
+		fn = s.agent.getImagesUpdates
+	case scheduler.SERVICE_BASED:
+		return nil
+	}
+
+	old := make(map[string]int)
+	for key, value := range s.agent.sentRootFs {
+		old[key] = value
+	}
+
+	for {
+		select {
+		case <-interval.C:
+			appends, removals, err := fn(ctx)
+			// if error occurs, retry
+			if err != nil  || (appends == nil && removals == nil) {
+				s.agent.sentRootFs = old
+				interval.Reset(SYNC_INTERVAL)
+				continue
+			}
+			// timeout after 30 seconds
+			syncCtx, cancel := context.WithTimeout(ctx, SYNC_TIMEOUT)
+			_, syncErr := client.RootFSSync(syncCtx, &api.RootFSSyncRequest{
+				SessionID: s.sessionID,
+				Appends: appends,
+				Removals: removals,
+			})
+			cancel()
+			if syncErr != nil {
+				if grpc.Code(syncErr) == codes.NotFound {
+					err = errNodeNotRegistered
+				}
+				s.agent.sentRootFs = old
+				return err
+			}
+			interval.Reset(SYNC_INTERVAL)
+		case <-s.closed:
+			return errSessionClosed
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }

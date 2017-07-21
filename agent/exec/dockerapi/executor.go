@@ -11,6 +11,7 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"golang.org/x/net/context"
+	"github.com/docker/docker/api/types"
 )
 
 type executor struct {
@@ -135,13 +136,45 @@ func (e *executor) Secrets() exec.SecretsManager {
 
 type sortedPlugins []api.PluginDescription
 
-func (sp sortedPlugins) Len() int { return len(sp) }
+func (sp sortedPlugins) Len() int {
+	return len(sp)
+}
 
-func (sp sortedPlugins) Swap(i, j int) { sp[i], sp[j] = sp[j], sp[i] }
+func (sp sortedPlugins) Swap(i, j int) {
+	sp[i], sp[j] = sp[j], sp[i]
+}
 
 func (sp sortedPlugins) Less(i, j int) bool {
 	if sp[i].Type != sp[j].Type {
 		return sp[i].Type < sp[j].Type
 	}
 	return sp[i].Name < sp[j].Name
+}
+
+func (e *executor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error) {
+	img, _, err := e.client.ImageInspectWithRaw(ctx, image)
+	if err != nil {
+		return types.ImageInspect{}, err
+	}
+	return img, nil
+}
+
+func (e *executor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+	layers, err := e.client.AllRootFS(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return layers, nil
+}
+
+func (e *executor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
+	options := types.ImageListOptions{
+		All:     true,
+		Filters: filters.NewArgs(),
+	}
+	images, err := e.client.ImageList(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return images, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/docker/swarmkit/api/equality"
 	"github.com/docker/swarmkit/ca"
 	"github.com/docker/swarmkit/log"
+	"github.com/docker/swarmkit/manager/scheduler"
 	"github.com/docker/swarmkit/manager/state"
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/remotes"
@@ -131,6 +132,8 @@ type Dispatcher struct {
 	// for waiting for the next task/node batch update
 	processUpdatesLock sync.Mutex
 	processUpdatesCond *sync.Cond
+
+	syncChan chan *scheduler.SyncMessage
 }
 
 // New returns Dispatcher with cluster interface(usually raft.Node).
@@ -168,6 +171,10 @@ func getWeightedPeers(cluster Cluster) []*api.WeightedPeer {
 		})
 	}
 	return mgrs
+}
+
+func (d *Dispatcher) InitSyncChan(syncChan chan *scheduler.SyncMessage) {
+	d.syncChan = syncChan
 }
 
 // Run runs dispatcher tasks which should be run on leader dispatcher.
@@ -1423,4 +1430,50 @@ func (d *Dispatcher) Session(r *api.SessionRequest, stream api.Dispatcher_Sessio
 			return disconnectNode()
 		}
 	}
+}
+
+func (d *Dispatcher) RootFSSync(ctx context.Context, r *api.RootFSSyncRequest) (*api.RootFSSyncMessage, error) {
+	nodeInfo, err := ca.RemoteNode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nodeID := nodeInfo.NodeID
+	fields := logrus.Fields{
+		"node.id":      nodeID,
+		"node.session": r.SessionID,
+		"method":       "(*Dispatcher).RootFSSync",
+	}
+	if nodeInfo.ForwardedBy != nil {
+		fields["forwarder.id"] = nodeInfo.ForwardedBy.NodeID
+	}
+	log := log.G(ctx).WithFields(fields)
+
+	dctx, err := d.isRunningLocked()
+	if err != nil {
+		log.Error("Dispatcher is not running")
+		return nil, err
+	}
+
+	if _, err := d.nodes.GetWithSession(nodeID, r.SessionID); err != nil {
+		return nil, err
+	}
+
+	appends, removals := r.Appends, r.Removals
+	// add appends to scheduler
+	if d.syncChan == nil {
+		log.Error("dispatcher lost SyncChan")
+		return nil, errors.New("SyncChan is missing")
+	}
+
+	select {
+	case d.syncChan <- &scheduler.SyncMessage{
+		NodeId:   nodeID,
+		Appends:  appends,
+		Removals: removals,
+	}:
+	case <-dctx.Done():
+		return nil, dctx.Err()
+	}
+
+	return nil, nil
 }

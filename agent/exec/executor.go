@@ -3,6 +3,7 @@ package exec
 import (
 	"github.com/docker/swarmkit/api"
 	"golang.org/x/net/context"
+	"github.com/docker/docker/api/types"
 )
 
 // Executor provides controllers for tasks.
@@ -20,6 +21,14 @@ type Executor interface {
 	// SetNetworkBootstrapKeys passes the symmetric keys from the
 	// manager to the executor.
 	SetNetworkBootstrapKeys([]*api.EncryptionKey) error
+
+	//
+	ImageInspect(ctx context.Context, image string) (types.ImageInspect, error)
+
+	//
+	GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error)
+
+	ImageList(ctx context.Context) ([]types.ImageSummary, error)
 }
 
 // SecretsProvider is implemented by objects that can store secrets, typically

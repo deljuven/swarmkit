@@ -49,10 +49,10 @@ type DRFResource struct {
 }
 
 type DRFNode struct {
-	nodeId		string
-	taskId		string
-	serviceId	string
-	dominantReserved DRFResource
+	nodeId            string
+	taskId            string
+	serviceKey        string
+	dominantReserved  DRFResource
 	dominantAvailable DRFResource
 }
 
@@ -69,16 +69,16 @@ func drfResource(nodeInfo NodeInfo, task api.Task) (taskReserved, nodeAvailable 
 	return
 }
 
-func newDRFNode(node NodeInfo, task api.Task) *DRFNode {
+func newDRFNode(node NodeInfo, serviceKey string, task api.Task) *DRFNode {
 	drfNode := &DRFNode{}
 	drfNode.nodeId = node.ID
 	drfNode.taskId = task.ID
-	drfNode.serviceId = task.ServiceID
+	drfNode.serviceKey = serviceKey
 	drfNode.dominantReserved, drfNode.dominantAvailable = drfResource(node, task)
 	return drfNode
 }
 
-func newDRFNodes(node NodeInfo, tasks map[string]*api.Task) []DRFNode {
+func newDRFNodes(node NodeInfo, serviceKey string, tasks map[string]*api.Task) []DRFNode {
 	nodes := make([]DRFNode, len(tasks))
 	taskList := make([]*api.Task, 0)
 	for _,t := range tasks {
@@ -88,7 +88,7 @@ func newDRFNodes(node NodeInfo, tasks map[string]*api.Task) []DRFNode {
 		nodes[index] = DRFNode{}
 		nodes[index].nodeId = node.ID
 		nodes[index].taskId = taskList[index].ID
-		nodes[index].serviceId = taskList[index].ServiceID
+		nodes[index].serviceKey = serviceKey
 		nodes[index].dominantReserved, nodes[index].dominantAvailable = drfResource(node, *taskList[index])
 	}
 	return nodes
@@ -125,8 +125,8 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 	drfLess := func(ni, nj *DRFNode) bool {
 		if h.toAllocReplicas != nil {
 			toReplicas := *h.toAllocReplicas
-			if toReplicas[ni.serviceId] != toReplicas[nj.serviceId] {
-				return toReplicas[ni.serviceId] > toReplicas[nj.serviceId]
+			if toReplicas[ni.serviceKey] != toReplicas[nj.serviceKey] {
+				return toReplicas[ni.serviceKey] > toReplicas[nj.serviceKey]
 			}
 		}
 
@@ -134,8 +134,8 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 			coherencesMapping := *h.coherenceMapping
 			factorKeysMapping := *h.factorKeyMapping
 			//coherenceI, coherenceJ := 0,0
-			factorKeysI, okI := factorKeysMapping[ni.serviceId]
-			factorKeysJ, okJ := factorKeysMapping[nj.serviceId]
+			factorKeysI, okI := factorKeysMapping[ni.serviceKey]
+			factorKeysJ, okJ := factorKeysMapping[nj.serviceKey]
 			getFactor := func(keys []string, nodeId string) int {
 				final := 0
 				for _, key := range keys {
@@ -207,11 +207,8 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstrain
 	h.nodes = make([]DRFNode, 0)
 	for _, node := range nodes {
 		for _, task := range tasks {
-			//if _, ok := node.ActiveTasksCountByService[task.ServiceID]; ok {
-			//
-			//}
 			if meetsConstraints(&node) {
-				h.nodes = append(h.nodes, *newDRFNode(node, task))
+				h.nodes = append(h.nodes, *newDRFNode(node, GetTaskGroupKey(&task), task))
 			}
 		}
 	}

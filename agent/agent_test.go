@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
+	"github.com/docker/docker/api/types"
 )
 
 // NoopExecutor is a dummy executor that implements enough to get the agent started.
@@ -33,6 +34,19 @@ func (e *NoopExecutor) Controller(t *api.Task) (exec.Controller, error) {
 
 func (e *NoopExecutor) SetNetworkBootstrapKeys([]*api.EncryptionKey) error {
 	return nil
+}
+
+//
+func (e *NoopExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error){
+	return types.ImageInspect{}, nil
+}
+
+func (e *NoopExecutor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+	return nil, nil
+}
+
+func (e *NoopExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
+	return nil, nil
 }
 
 func TestAgent(t *testing.T) {

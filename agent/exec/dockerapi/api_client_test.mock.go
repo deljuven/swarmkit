@@ -1156,3 +1156,11 @@ func (_m *MockAPIClient) VolumesPrune(_param0 context.Context, _param1 filters.A
 func (_mr *_MockAPIClientRecorder) VolumesPrune(arg0, arg1 interface{}) *gomock.Call {
 	return _mr.mock.ctrl.RecordCall(_mr.mock, "VolumesPrune", arg0, arg1)
 }
+
+func (_mr *MockAPIClient) AllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+	return nil, nil
+}
+
+func (_mr *_MockAPIClientRecorder) AllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+	return nil, nil
+}
