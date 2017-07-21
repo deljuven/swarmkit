@@ -3,10 +3,10 @@ package integration
 import (
 	"sync"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/swarmkit/agent/exec"
 	"github.com/docker/swarmkit/api"
 	"golang.org/x/net/context"
-	"github.com/docker/docker/api/types"
 )
 
 // TestExecutor is executor for integration tests
@@ -36,7 +36,7 @@ func (e *TestExecutor) Controller(t *api.Task) (exec.Controller, error) {
 }
 
 //
-func (e *TestExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error){
+func (e *TestExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error) {
 	return types.ImageInspect{}, nil
 }
 
@@ -45,7 +45,7 @@ func (e *TestExecutor) GetAllRootFS(ctx context.Context) (map[string]types.RootF
 	return nil, nil
 }
 
-func (e *TestExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error){
+func (e *TestExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	return nil, nil
 }
 

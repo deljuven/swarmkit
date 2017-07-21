@@ -9,10 +9,10 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/connectionbroker"
 	"github.com/docker/swarmkit/log"
+	"github.com/docker/swarmkit/manager/scheduler"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"github.com/docker/swarmkit/manager/scheduler"
 )
 
 const dispatcherRPCTimeout = 5 * time.Second
@@ -444,7 +444,7 @@ func (s *session) syncTick(ctx context.Context) error {
 		case <-interval.C:
 			appends, removals, err := fn(ctx)
 			// if error occurs, retry
-			if err != nil  || (appends == nil && removals == nil) {
+			if err != nil || (appends == nil && removals == nil) {
 				s.agent.sentRootFs = old
 				interval.Reset(SYNC_INTERVAL)
 				continue
@@ -453,8 +453,8 @@ func (s *session) syncTick(ctx context.Context) error {
 			syncCtx, cancel := context.WithTimeout(ctx, SYNC_TIMEOUT)
 			_, syncErr := client.RootFSSync(syncCtx, &api.RootFSSyncRequest{
 				SessionID: s.sessionID,
-				Appends: appends,
-				Removals: removals,
+				Appends:   appends,
+				Removals:  removals,
 			})
 			cancel()
 			if syncErr != nil {

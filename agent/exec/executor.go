@@ -1,9 +1,9 @@
 package exec
 
 import (
+	"github.com/docker/docker/api/types"
 	"github.com/docker/swarmkit/api"
 	"golang.org/x/net/context"
-	"github.com/docker/docker/api/types"
 )
 
 // Executor provides controllers for tasks.

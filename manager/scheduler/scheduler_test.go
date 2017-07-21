@@ -2204,7 +2204,6 @@ func benchScheduler(b *testing.B, nodes, tasks int, networkConstraints bool) {
 	}
 }
 
-
 func TestImagePreferences(t *testing.T) {
 	ctx := context.Background()
 	initialNodeSet := []*api.Node{
@@ -2372,7 +2371,7 @@ func TestImagePreferences(t *testing.T) {
 			},
 			Resources: &api.ResourceRequirements{
 				Reservations: &api.Resources{
-					NanoCPUs: 1e8,
+					NanoCPUs:    1e8,
 					MemoryBytes: 2e8,
 				},
 			},
@@ -2400,13 +2399,13 @@ func TestImagePreferences(t *testing.T) {
 			if i == 10 {
 				taskTemplate1.NodeID = "id4"
 				taskTemplate1.Status = api.TaskStatus{
-					State:api.TaskStateRunning,
+					State: api.TaskStateRunning,
 				}
 			}
 			if i == 11 {
 				taskTemplate1.NodeID = "id5"
 				taskTemplate1.Status = api.TaskStatus{
-					State:api.TaskStateRunning,
+					State: api.TaskStateRunning,
 				}
 			}
 			assert.NoError(t, store.CreateTask(tx, taskTemplate1))

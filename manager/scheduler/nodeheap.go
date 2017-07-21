@@ -81,10 +81,10 @@ func newDRFNode(node NodeInfo, serviceKey string, task api.Task) *DRFNode {
 func newDRFNodes(node NodeInfo, serviceKey string, tasks map[string]*api.Task) []DRFNode {
 	nodes := make([]DRFNode, len(tasks))
 	taskList := make([]*api.Task, 0)
-	for _,t := range tasks {
+	for _, t := range tasks {
 		taskList = append(taskList, t)
 	}
-	for index := range nodes{
+	for index := range nodes {
 		nodes[index] = DRFNode{}
 		nodes[index].nodeId = node.ID
 		nodes[index].taskId = taskList[index].ID
@@ -104,8 +104,8 @@ func (node *DRFNode) Reserved() DRFResource {
 
 // build a min heap for drf algorithm, which is based on max-min fairness
 type nodeDRFHeap struct {
-	nodes            []DRFNode
-	toAllocReplicas  *map[string]int
+	nodes           []DRFNode
+	toAllocReplicas *map[string]int
 	// coherence factor mapping, mapping from service to node or image to node or rootfs to node
 	coherenceMapping *map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
@@ -173,8 +173,8 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 			return false
 		}
 
-		leftI, typeI := availableI.amount - reservedI.amount, availableI.resourceType
-		leftJ, typeJ := availableJ.amount - reservedJ.amount, availableJ.resourceType
+		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
 		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
 		if typeI == typeJ {
 			if leftI == leftJ {
@@ -195,7 +195,7 @@ func (h *nodeDRFHeap) Push(x interface{}) {
 }
 
 func (h *nodeDRFHeap) Pop() interface{} {
-	length := len(h.nodes)-1
+	length := len(h.nodes) - 1
 	finest := h.nodes[length]
 	h.nodes = h.nodes[:length]
 	return finest
@@ -212,8 +212,11 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstrain
 			}
 		}
 	}
-	allocTmp := make(map[string]int); h.toAllocReplicas = &allocTmp
-	coherenceTmp := make(map[string]map[string]int);h.coherenceMapping = &coherenceTmp
-	serviceTmp := make(map[string][]string);h.factorKeyMapping = &serviceTmp
+	allocTmp := make(map[string]int)
+	h.toAllocReplicas = &allocTmp
+	coherenceTmp := make(map[string]map[string]int)
+	h.coherenceMapping = &coherenceTmp
+	serviceTmp := make(map[string][]string)
+	h.factorKeyMapping = &serviceTmp
 
 }

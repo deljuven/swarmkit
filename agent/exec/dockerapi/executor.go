@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	engineapi "github.com/docker/docker/client"
 	"github.com/docker/swarmkit/agent/exec"
@@ -11,7 +12,6 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"golang.org/x/net/context"
-	"github.com/docker/docker/api/types"
 )
 
 type executor struct {

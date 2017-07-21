@@ -149,9 +149,9 @@ type Manager struct {
 	controlListener chan net.Listener
 	errServe        chan error
 
-	syncChan        chan *scheduler.SyncMessage
+	syncChan chan *scheduler.SyncMessage
 
-	imageQueryReq chan *scheduler.RootfsQueryReq
+	imageQueryReq  chan *scheduler.RootfsQueryReq
 	imageQueryResp chan *scheduler.RootfsQueryResp
 }
 
@@ -168,7 +168,7 @@ func (l *closeOnceListener) Close() error {
 	return err
 }
 
-func (m *Manager) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp){
+func (m *Manager) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp) {
 	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
 		return
 	}
@@ -1041,7 +1041,6 @@ func (m *Manager) becomeFollower() {
 		m.keyManager.Stop()
 		m.keyManager = nil
 	}
-
 
 	m.scheduler.InitSyncChan(nil)
 	m.dispatcher.InitSyncChan(nil)

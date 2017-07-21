@@ -3,14 +3,14 @@ package scheduler
 import (
 	"testing"
 
+	"container/heap"
 	"github.com/docker/swarmkit/api"
 	"github.com/stretchr/testify/assert"
-	"container/heap"
 )
 
 func TestDRFHeap(t *testing.T) {
-	node1 := &api.Node{ID:"node1"}
-	node2 := &api.Node{ID:"node2"}
+	node1 := &api.Node{ID: "node1"}
+	node2 := &api.Node{ID: "node2"}
 
 	task1 := api.Task{
 		ID: "task1",
@@ -48,7 +48,7 @@ func TestDRFHeap(t *testing.T) {
 		},
 	}
 
-	tasks := []api.Task{task1,task2, task3,}
+	tasks := []api.Task{task1, task2, task3}
 
 	// nodeInfo has no tasks
 	nodeInfo1 := newNodeInfo(node1, nil, api.Resources{
@@ -60,7 +60,7 @@ func TestDRFHeap(t *testing.T) {
 		MemoryBytes: 4e7,
 	})
 
-	nodes := []NodeInfo{nodeInfo1, nodeInfo2,}
+	nodes := []NodeInfo{nodeInfo1, nodeInfo2}
 
 	var drfHeap nodeDRFHeap
 	drfHeap.Prepare(nodes, tasks, func(node *NodeInfo) bool {

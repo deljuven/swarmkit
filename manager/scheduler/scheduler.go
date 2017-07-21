@@ -3,14 +3,14 @@ package scheduler
 import (
 	"time"
 
+	"container/heap"
+	"errors"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager/state"
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"golang.org/x/net/context"
-	"container/heap"
-	"errors"
 )
 
 const (
@@ -52,13 +52,13 @@ type SyncMessage struct {
 }
 
 type RootfsQueryReq struct {
-	Image        string
-	ServiceSpec  string
+	Image       string
+	ServiceSpec string
 }
 
 type RootfsQueryResp struct {
-	ServiceSpec  string
-	Rootfs       []string
+	ServiceSpec string
+	Rootfs      []string
 }
 
 // Scheduler assigns tasks to nodes.
@@ -91,7 +91,7 @@ type Scheduler struct {
 
 	syncChan chan *SyncMessage
 
-	imageQueryReq chan *RootfsQueryReq
+	imageQueryReq  chan *RootfsQueryReq
 	imageQueryResp chan *RootfsQueryResp
 }
 
@@ -123,8 +123,6 @@ func (s *Scheduler) ImageQueryPrepare(imageQueryReq chan *RootfsQueryReq, imageQ
 	}
 	s.imageQueryReq, s.imageQueryResp = imageQueryReq, imageQueryResp
 }
-
-
 
 func (s *Scheduler) setupTasksList(tx store.ReadTx) error {
 	tasks, err := store.FindTasks(tx, store.All)
@@ -164,7 +162,7 @@ func (s *Scheduler) setupTasksList(tx store.ReadTx) error {
 	return nil
 }
 
-func (s *Scheduler) syncRootfs() error{
+func (s *Scheduler) syncRootfs() error {
 	var syncMapping map[string]map[string]int
 	switch SUPPORT_FLAG {
 	case ROOTSF_BASED:
@@ -197,11 +195,10 @@ func (s *Scheduler) syncRootfs() error{
 	}
 }
 
-
 // used to query registry for specified image's rootfs
 func (s *Scheduler) SyncRootFSMapping(image string, serviceSpec string) {
 	s.imageQueryReq <- &RootfsQueryReq{
-		Image: image,
+		Image:       image,
 		ServiceSpec: serviceSpec,
 	}
 }

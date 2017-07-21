@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/swarmkit/agent/exec"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
-	"golang.org/x/net/context"
-	"github.com/docker/docker/api/types"
 	"github.com/docker/swarmkit/manager/scheduler"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -49,7 +49,7 @@ type Agent struct {
 
 	sentRootFs map[string]int // mark rootfs those has been sent
 
-	imageQueryReq chan *scheduler.RootfsQueryReq
+	imageQueryReq  chan *scheduler.RootfsQueryReq
 	imageQueryResp chan *scheduler.RootfsQueryResp
 }
 
@@ -60,14 +60,14 @@ func New(config *Config) (*Agent, error) {
 	}
 
 	a := &Agent{
-		config:   config,
-		sessionq: make(chan sessionOperation),
-		started:  make(chan struct{}),
-		leaving:  make(chan struct{}),
-		left:     make(chan struct{}),
-		stopped:  make(chan struct{}),
-		closed:   make(chan struct{}),
-		ready:    make(chan struct{}),
+		config:     config,
+		sessionq:   make(chan sessionOperation),
+		started:    make(chan struct{}),
+		leaving:    make(chan struct{}),
+		left:       make(chan struct{}),
+		stopped:    make(chan struct{}),
+		closed:     make(chan struct{}),
+		ready:      make(chan struct{}),
 		sentRootFs: make(map[string]int),
 	}
 
@@ -75,7 +75,7 @@ func New(config *Config) (*Agent, error) {
 	return a, nil
 }
 
-func (a *Agent) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp){
+func (a *Agent) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp) {
 	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
 		return
 	}
@@ -569,11 +569,11 @@ func (a *Agent) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, erro
 	return a.config.Executor.GetAllRootFS(ctx)
 }
 
-func (a *Agent) ImageList(ctx context.Context) ([]types.ImageSummary, error){
+func (a *Agent) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	return a.config.Executor.ImageList(ctx)
 }
 
-func (a *Agent) getUpdates(candidates []string) (appends []string, removals []string){
+func (a *Agent) getUpdates(candidates []string) (appends []string, removals []string) {
 	discarded := make(map[string]int)
 	for key, value := range a.sentRootFs {
 		discarded[key] = value
@@ -594,7 +594,7 @@ func (a *Agent) getUpdates(candidates []string) (appends []string, removals []st
 	return
 }
 
-func (a *Agent) HandleImageQuery(ctx context.Context){
+func (a *Agent) HandleImageQuery(ctx context.Context) {
 	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
 		return
 	}
@@ -613,7 +613,7 @@ func (a *Agent) HandleImageQuery(ctx context.Context){
 			}
 			a.imageQueryResp <- &scheduler.RootfsQueryResp{
 				ServiceSpec: servSpec,
-				Rootfs: rootfs.Layers,
+				Rootfs:      rootfs.Layers,
 			}
 		}
 	}
@@ -659,8 +659,8 @@ func (a *Agent) getRootfsUpdates(ctx context.Context) (appends []string, removal
 
 	rootfsList, err := a.GetAllRootFS(ctx)
 	if err != nil {
-	log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get rootfs list on node")
-	return nil, nil, err
+		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get rootfs list on node")
+		return nil, nil, err
 	}
 	layers := make([]string, 0)
 	for _, rootfs := range rootfsList {

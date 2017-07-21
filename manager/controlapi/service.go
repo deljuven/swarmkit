@@ -12,6 +12,7 @@ import (
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/identity"
 	"github.com/docker/swarmkit/manager/constraint"
+	"github.com/docker/swarmkit/manager/scheduler"
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"github.com/docker/swarmkit/template"
@@ -19,7 +20,6 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"github.com/docker/swarmkit/manager/scheduler"
 )
 
 var (
@@ -312,7 +312,7 @@ func validateMode(s *api.ServiceSpec) error {
 			if prefs := placement.Preferences; prefs != nil && len(prefs) > 0 {
 				for _, pref := range prefs {
 					if img := pref.GetImage(); img != nil {
-						switch strategy{
+						switch strategy {
 						case scheduler.None:
 							strategy = scheduler.ImageBase
 							if int64(img.ReplicaDescriptor) < 1 {
@@ -327,7 +327,7 @@ func validateMode(s *api.ServiceSpec) error {
 							return grpc.Errorf(codes.InvalidArgument, "Can not combine image-base strategy and spreadOver strategy together")
 						}
 					} else if spread := pref.GetSpread(); spread != nil {
-						switch strategy{
+						switch strategy {
 						case scheduler.None:
 							strategy = scheduler.SpreadOver
 						case scheduler.ImageBase:

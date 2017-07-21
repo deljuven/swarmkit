@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/swarmkit/agent/exec"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/ca"
@@ -13,7 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
-	"github.com/docker/docker/api/types"
 )
 
 // NoopExecutor is a dummy executor that implements enough to get the agent started.
@@ -37,7 +37,7 @@ func (e *NoopExecutor) SetNetworkBootstrapKeys([]*api.EncryptionKey) error {
 }
 
 //
-func (e *NoopExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error){
+func (e *NoopExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error) {
 	return types.ImageInspect{}, nil
 }
 
