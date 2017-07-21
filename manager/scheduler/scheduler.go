@@ -28,34 +28,49 @@ type schedulingDecision struct {
 	new *api.Task
 }
 
+// Strategy is used to point out which scheduler strategy is supported
 type Strategy int64
+
+// OrderBase is used to show the order level used in image strategy
 type OrderBase int64
 
 const (
+	// None means no strategy is used. This is only used as an initial value
 	None Strategy = 0
 
+	// SpreadOver means spreadover strategy is used, which is the default option in swarmkit
 	SpreadOver Strategy = 64
 
+	// ImageBase means image-based strategy is supported as well, this is cooperated with speadover strategy
 	ImageBase Strategy = 128
 
-	// flag for rootfs-base(0) or image-based(1) or service-based(2)
-	ROOTSF_BASED  OrderBase = 0
-	IMAGE_BASED   OrderBase = 1
-	SERVICE_BASED OrderBase = 2
-	SUPPORT_FLAG  OrderBase = SERVICE_BASED
+	// RootfsBased means image-based strategy orders nodes by their rootfs coherence
+	RootfsBased OrderBase = 0
+
+	// ImageBased means image-based strategy orders nodes by their image coherence
+	ImageBased OrderBase = 1
+
+	// ServiceBased means image-based strategy orders nodes by their service coherence
+	ServiceBased OrderBase = 2
+
+	// SupportFlag indicates which order policy is taken
+	SupportFlag OrderBase = ServiceBased
 )
 
+// SyncMessage used for sync image or rootfs changes from agent to scheduler by dispatcher
 type SyncMessage struct {
-	NodeId   string
+	NodeID   string
 	Appends  []string
 	Removals []string
 }
 
+// RootfsQueryReq used to query the image info specified by the service in its spec
 type RootfsQueryReq struct {
 	Image       string
 	ServiceSpec string
 }
 
+// RootfsQueryResp used to handle the resp from RootfsQueryReq
 type RootfsQueryResp struct {
 	ServiceSpec string
 	Rootfs      []string
@@ -113,12 +128,14 @@ func New(store *store.MemoryStore) *Scheduler {
 	}
 }
 
+// InitSyncChan inits the sync chan shared with dispatcher
 func (s *Scheduler) InitSyncChan(syncChan chan *SyncMessage) {
 	s.syncChan = syncChan
 }
 
+// ImageQueryPrepare inits the query chan shared with agent
 func (s *Scheduler) ImageQueryPrepare(imageQueryReq chan *RootfsQueryReq, imageQueryResp chan *RootfsQueryResp) {
-	if SUPPORT_FLAG != ROOTSF_BASED {
+	if SupportFlag != RootfsBased {
 		return
 	}
 	s.imageQueryReq, s.imageQueryResp = imageQueryReq, imageQueryResp
@@ -164,12 +181,12 @@ func (s *Scheduler) setupTasksList(tx store.ReadTx) error {
 
 func (s *Scheduler) syncRootfs() error {
 	var syncMapping map[string]map[string]int
-	switch SUPPORT_FLAG {
-	case ROOTSF_BASED:
+	switch SupportFlag {
+	case RootfsBased:
 		syncMapping = s.rootfsMapping
-	case IMAGE_BASED:
+	case ImageBased:
 		syncMapping = s.imageMapping
-	case SERVICE_BASED:
+	case ServiceBased:
 		return nil
 	}
 	for {
@@ -179,7 +196,7 @@ func (s *Scheduler) syncRootfs() error {
 				return errors.New("read nil while synchronizing from dispatcher")
 			}
 			syncMsg := *msg
-			nodeID := syncMsg.NodeId
+			nodeID := syncMsg.NodeID
 			for _, item := range syncMsg.Appends {
 				if _, ok := syncMapping[item]; !ok {
 					syncMapping[item] = make(map[string]int)
@@ -195,7 +212,7 @@ func (s *Scheduler) syncRootfs() error {
 	}
 }
 
-// used to query registry for specified image's rootfs
+// SyncRootFSMapping is used to query registry for specified image's rootfs
 func (s *Scheduler) SyncRootFSMapping(image string, serviceSpec string) {
 	s.imageQueryReq <- &RootfsQueryReq{
 		Image:       image,
@@ -485,7 +502,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		// into taskKey and using it as a map key.
 		// TODO(aaronl): Once specs are versioned, this will allow a
 		// much more efficient fast path.
-		taskGroupKey := GetTaskGroupKey(t)
+		taskGroupKey := getTaskGroupKey(t)
 		taskGroupKeys[t.ID] = taskGroupKey
 
 		var prefs []*api.PlacementPreference
@@ -540,7 +557,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
-func GetTaskGroupKey(t *api.Task) (taskGroupKey string) {
+func getTaskGroupKey(t *api.Task) (taskGroupKey string) {
 	fieldsToMarshal := api.Task{
 		ServiceID: t.ServiceID,
 		Spec:      t.Spec,
@@ -568,7 +585,7 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if t == nil {
 		return
 	}
-	serviceKey := GetTaskGroupKey(t)
+	serviceKey := getTaskGroupKey(t)
 	_, ok := s.serviceReplicas[serviceKey]
 	if nodeInfo.ActiveTasksCountByService[serviceKey] > 0 {
 		if !ok {
@@ -577,13 +594,13 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 		if _, ok := s.serviceReplicas[serviceKey][nodeInfo.ID]; !ok {
 			s.serviceReplicas[serviceKey][nodeInfo.ID] = 1
 		}
-		switch SUPPORT_FLAG {
-		case SERVICE_BASED:
+		switch SupportFlag {
+		case ServiceBased:
 			s.updateFactorKeys(serviceKey, []string{serviceKey})
-		case IMAGE_BASED:
+		case ImageBased:
 			img := t.Spec.GetContainer().Image
 			s.updateFactorKeys(serviceKey, []string{img})
-		case ROOTSF_BASED:
+		case RootfsBased:
 			// if service spec is not in the factor mapping, call manager to update the mapping
 			if _, ok := s.factorKeys[serviceKey]; !ok {
 				s.SyncRootFSMapping(t.Spec.GetContainer().Image, serviceKey)
@@ -639,17 +656,17 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 	drfHeap := nodeDRFHeap{}
 	drfHeap.toAllocReplicas = &s.toAllocReplicas
 	drfHeap.factorKeyMapping = &s.factorKeys
-	switch SUPPORT_FLAG {
-	case ROOTSF_BASED:
+	switch SupportFlag {
+	case RootfsBased:
 		drfHeap.coherenceMapping = &s.rootfsMapping
-	case IMAGE_BASED:
+	case ImageBased:
 		drfHeap.coherenceMapping = &s.imageMapping
-	case SERVICE_BASED:
+	case ServiceBased:
 		drfHeap.coherenceMapping = &s.serviceReplicas
 	}
 	for {
 		// init drf heap
-		drfHeap.nodes = make([]DRFNode, 0)
+		drfHeap.nodes = make([]drfNode, 0)
 		for servSpec, taskGroup := range taskGroups {
 			//filter tasks
 			var t *api.Task
@@ -679,13 +696,13 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 
 		// get drf result and apply it
 		heap.Init(&drfHeap)
-		fittest, ok := heap.Pop(&drfHeap).(DRFNode)
+		fittest, ok := heap.Pop(&drfHeap).(drfNode)
 		if !ok {
 			log.G(ctx).Errorf("drf heap failed")
 			break
 		}
 
-		nodeID, taskID := fittest.nodeId, fittest.taskId
+		nodeID, taskID := fittest.nodeID, fittest.taskID
 		// Skip tasks which were already scheduled because they ended
 		// up in two groups at once.
 		if _, exists := schedulingDecisions[taskID]; exists {

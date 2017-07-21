@@ -22,12 +22,13 @@ type Executor interface {
 	// manager to the executor.
 	SetNetworkBootstrapKeys([]*api.EncryptionKey) error
 
-	//
+	// ImageInspect returns image info with the specified image
 	ImageInspect(ctx context.Context, image string) (types.ImageInspect, error)
 
-	//
+	// GetAllRootFS return all rootfs info on the underlying node
 	GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error)
 
+	// ImageList return all images on the underlying node
 	ImageList(ctx context.Context) ([]types.ImageSummary, error)
 }
 

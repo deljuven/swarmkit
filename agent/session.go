@@ -414,23 +414,25 @@ func (s *session) close() error {
 	return nil
 }
 
-const SYNC_INTERVAL = 5 * time.Minute
-const SYNC_TIMEOUT = 30 * time.Second
+const (
+	syncInterval = 5 * time.Minute
+	syncTimeout  = 30 * time.Second
+)
 
 func (s *session) syncTick(ctx context.Context) error {
 	log.G(ctx).Debugf("(*session).syncTick for sync image or rootfs to manager")
 	client := api.NewDispatcherClient(s.conn.ClientConn)
 	// every 5 minute try to send out a sync
-	interval := time.NewTimer(SYNC_INTERVAL)
+	interval := time.NewTimer(syncInterval)
 	defer interval.Stop()
 
 	var fn func(context.Context) ([]string, []string, error)
-	switch scheduler.SUPPORT_FLAG {
-	case scheduler.ROOTSF_BASED:
+	switch scheduler.SupportFlag {
+	case scheduler.RootfsBased:
 		fn = s.agent.getRootfsUpdates
-	case scheduler.IMAGE_BASED:
+	case scheduler.ImageBased:
 		fn = s.agent.getImagesUpdates
-	case scheduler.SERVICE_BASED:
+	case scheduler.ServiceBased:
 		return nil
 	}
 
@@ -446,11 +448,11 @@ func (s *session) syncTick(ctx context.Context) error {
 			// if error occurs, retry
 			if err != nil || (appends == nil && removals == nil) {
 				s.agent.sentRootFs = old
-				interval.Reset(SYNC_INTERVAL)
+				interval.Reset(syncInterval)
 				continue
 			}
 			// timeout after 30 seconds
-			syncCtx, cancel := context.WithTimeout(ctx, SYNC_TIMEOUT)
+			syncCtx, cancel := context.WithTimeout(ctx, syncTimeout)
 			_, syncErr := client.RootFSSync(syncCtx, &api.RootFSSyncRequest{
 				SessionID: s.sessionID,
 				Appends:   appends,
@@ -464,7 +466,7 @@ func (s *session) syncTick(ctx context.Context) error {
 				s.agent.sentRootFs = old
 				return err
 			}
-			interval.Reset(SYNC_INTERVAL)
+			interval.Reset(syncInterval)
 		case <-s.closed:
 			return errSessionClosed
 		case <-ctx.Done():

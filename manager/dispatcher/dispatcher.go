@@ -173,6 +173,7 @@ func getWeightedPeers(cluster Cluster) []*api.WeightedPeer {
 	return mgrs
 }
 
+// InitSyncChan inits the sync chan for sync rootfs modifications, shared with scheduler
 func (d *Dispatcher) InitSyncChan(syncChan chan *scheduler.SyncMessage) {
 	d.syncChan = syncChan
 }
@@ -1432,6 +1433,8 @@ func (d *Dispatcher) Session(r *api.SessionRequest, stream api.Dispatcher_Sessio
 	}
 }
 
+// RootFSSync is a method for node to sync its rootfs modification to manager node.
+// This method is implemented in an easy way, later should be refactored
 func (d *Dispatcher) RootFSSync(ctx context.Context, r *api.RootFSSyncRequest) (*api.RootFSSyncMessage, error) {
 	nodeInfo, err := ca.RemoteNode(ctx)
 	if err != nil {
@@ -1467,7 +1470,7 @@ func (d *Dispatcher) RootFSSync(ctx context.Context, r *api.RootFSSyncRequest) (
 
 	select {
 	case d.syncChan <- &scheduler.SyncMessage{
-		NodeId:   nodeID,
+		NodeID:   nodeID,
 		Appends:  appends,
 		Removals: removals,
 	}:

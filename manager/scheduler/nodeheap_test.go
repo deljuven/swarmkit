@@ -71,7 +71,7 @@ func TestDRFHeap(t *testing.T) {
 
 	finest := heap.Pop(&drfHeap)
 
-	expected := newDRFNode(nodeInfo1, GetTaskGroupKey(&task2), task2)
+	expected := newDRFNode(nodeInfo1, getTaskGroupKey(&task2), task2)
 	assert.Equal(t, *expected, finest, "should be equal")
 
 }

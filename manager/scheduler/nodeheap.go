@@ -36,75 +36,67 @@ func (h *nodeMaxHeap) Pop() interface{} {
 	return nil
 }
 
-type ResourceType int32
+type resourceType int32
 
 const (
-	CPU    ResourceType = 0
-	MEMORY ResourceType = 64
+	cpu    resourceType = 0
+	memory resourceType = 64
 )
 
-type DRFResource struct {
+type drfResource struct {
 	amount       int64
-	resourceType ResourceType
+	resourceType resourceType
 }
 
-type DRFNode struct {
-	nodeId            string
-	taskId            string
+type drfNode struct {
+	nodeID            string
+	taskID            string
 	serviceKey        string
-	dominantReserved  DRFResource
-	dominantAvailable DRFResource
+	dominantReserved  drfResource
+	dominantAvailable drfResource
 }
 
-func drfResource(nodeInfo NodeInfo, task api.Task) (taskReserved, nodeAvailable DRFResource) {
+func getDrfResource(nodeInfo NodeInfo, task api.Task) (taskReserved, nodeAvailable drfResource) {
 	reservations := taskReservations(task.Spec)
 	available := nodeInfo.AvailableResources
 	if big.NewRat(reservations.MemoryBytes, available.MemoryBytes).Cmp(big.NewRat(reservations.NanoCPUs, available.NanoCPUs)) > 0 {
-		taskReserved = DRFResource{reservations.MemoryBytes, MEMORY}
-		nodeAvailable = DRFResource{available.MemoryBytes, MEMORY}
+		taskReserved = drfResource{reservations.MemoryBytes, memory}
+		nodeAvailable = drfResource{available.MemoryBytes, memory}
 	} else {
-		taskReserved = DRFResource{reservations.NanoCPUs, CPU}
-		nodeAvailable = DRFResource{available.NanoCPUs, CPU}
+		taskReserved = drfResource{reservations.NanoCPUs, cpu}
+		nodeAvailable = drfResource{available.NanoCPUs, cpu}
 	}
 	return
 }
 
-func newDRFNode(node NodeInfo, serviceKey string, task api.Task) *DRFNode {
-	drfNode := &DRFNode{}
-	drfNode.nodeId = node.ID
-	drfNode.taskId = task.ID
+func newDRFNode(node NodeInfo, serviceKey string, task api.Task) *drfNode {
+	drfNode := &drfNode{}
+	drfNode.nodeID = node.ID
+	drfNode.taskID = task.ID
 	drfNode.serviceKey = serviceKey
-	drfNode.dominantReserved, drfNode.dominantAvailable = drfResource(node, task)
+	drfNode.dominantReserved, drfNode.dominantAvailable = getDrfResource(node, task)
 	return drfNode
 }
 
-func newDRFNodes(node NodeInfo, serviceKey string, tasks map[string]*api.Task) []DRFNode {
-	nodes := make([]DRFNode, len(tasks))
+func newDRFNodes(node NodeInfo, serviceKey string, tasks map[string]*api.Task) []drfNode {
+	nodes := make([]drfNode, len(tasks))
 	taskList := make([]*api.Task, 0)
 	for _, t := range tasks {
 		taskList = append(taskList, t)
 	}
 	for index := range nodes {
-		nodes[index] = DRFNode{}
-		nodes[index].nodeId = node.ID
-		nodes[index].taskId = taskList[index].ID
+		nodes[index] = drfNode{}
+		nodes[index].nodeID = node.ID
+		nodes[index].taskID = taskList[index].ID
 		nodes[index].serviceKey = serviceKey
-		nodes[index].dominantReserved, nodes[index].dominantAvailable = drfResource(node, *taskList[index])
+		nodes[index].dominantReserved, nodes[index].dominantAvailable = getDrfResource(node, *taskList[index])
 	}
 	return nodes
 }
 
-func (node *DRFNode) Available() DRFResource {
-	return node.dominantAvailable
-}
-
-func (node *DRFNode) Reserved() DRFResource {
-	return node.dominantReserved
-}
-
 // build a min heap for drf algorithm, which is based on max-min fairness
 type nodeDRFHeap struct {
-	nodes           []DRFNode
+	nodes           []drfNode
 	toAllocReplicas *map[string]int
 	// coherence factor mapping, mapping from service to node or image to node or rootfs to node
 	coherenceMapping *map[string]map[string]int
@@ -122,7 +114,7 @@ func (h nodeDRFHeap) Swap(i, j int) {
 
 func (h nodeDRFHeap) Less(i, j int) bool {
 	// reversed to make a drf-heap
-	drfLess := func(ni, nj *DRFNode) bool {
+	drfLess := func(ni, nj *drfNode) bool {
 		if h.toAllocReplicas != nil {
 			toReplicas := *h.toAllocReplicas
 			if toReplicas[ni.serviceKey] != toReplicas[nj.serviceKey] {
@@ -152,7 +144,7 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 				return final
 			}
 			if okI && okJ {
-				coherenceI, coherenceJ := getFactor(factorKeysI, ni.nodeId), getFactor(factorKeysJ, nj.nodeId)
+				coherenceI, coherenceJ := getFactor(factorKeysI, ni.nodeID), getFactor(factorKeysJ, nj.nodeID)
 				if coherenceI != coherenceJ {
 					return coherenceI > coherenceJ
 				}
@@ -178,10 +170,10 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
 		if typeI == typeJ {
 			if leftI == leftJ {
-				return strings.Compare(ni.nodeId, nj.nodeId) < 0
+				return strings.Compare(ni.nodeID, nj.nodeID) < 0
 			}
 			return leftI < leftJ
-		} else if typeI == CPU {
+		} else if typeI == cpu {
 			return true
 		} else {
 			return false
@@ -191,7 +183,7 @@ func (h nodeDRFHeap) Less(i, j int) bool {
 }
 
 func (h *nodeDRFHeap) Push(x interface{}) {
-	h.nodes = append(h.nodes, x.(DRFNode))
+	h.nodes = append(h.nodes, x.(drfNode))
 }
 
 func (h *nodeDRFHeap) Pop() interface{} {
@@ -201,14 +193,14 @@ func (h *nodeDRFHeap) Pop() interface{} {
 	return finest
 }
 
-// for test
+// Prepare used for initiation in test
 func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstraints func(*NodeInfo) bool) {
 	//size := len(tasks)
-	h.nodes = make([]DRFNode, 0)
+	h.nodes = make([]drfNode, 0)
 	for _, node := range nodes {
 		for _, task := range tasks {
 			if meetsConstraints(&node) {
-				h.nodes = append(h.nodes, *newDRFNode(node, GetTaskGroupKey(&task), task))
+				h.nodes = append(h.nodes, *newDRFNode(node, getTaskGroupKey(&task), task))
 			}
 		}
 	}

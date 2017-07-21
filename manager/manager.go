@@ -168,8 +168,9 @@ func (l *closeOnceListener) Close() error {
 	return err
 }
 
+// ImageQueryPrepare init image query chan, shared with agent
 func (m *Manager) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp) {
-	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
+	if scheduler.SupportFlag != scheduler.RootfsBased {
 		return
 	}
 	m.imageQueryReq, m.imageQueryResp = imageQueryReq, imageQueryResp

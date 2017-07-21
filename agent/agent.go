@@ -75,8 +75,9 @@ func New(config *Config) (*Agent, error) {
 	return a, nil
 }
 
+// ImageQueryPrepare init chan for accepting image query
 func (a *Agent) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, imageQueryResp chan *scheduler.RootfsQueryResp) {
-	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
+	if scheduler.SupportFlag != scheduler.RootfsBased {
 		return
 	}
 	a.imageQueryReq, a.imageQueryResp = imageQueryReq, imageQueryResp
@@ -565,10 +566,12 @@ func (a *Agent) queryImageLayers(ctx context.Context, image string) (*types.Root
 	return &img.RootFS, nil
 }
 
+// GetAllRootFS get all rootfs on the node by agent
 func (a *Agent) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
 	return a.config.Executor.GetAllRootFS(ctx)
 }
 
+// ImageList list all images on the node by agent
 func (a *Agent) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	return a.config.Executor.ImageList(ctx)
 }
@@ -594,8 +597,9 @@ func (a *Agent) getUpdates(candidates []string) (appends []string, removals []st
 	return
 }
 
+// HandleImageQuery resolve the queried image from chan and send the image's rootfs as the response
 func (a *Agent) HandleImageQuery(ctx context.Context) {
-	if scheduler.SUPPORT_FLAG != scheduler.ROOTSF_BASED {
+	if scheduler.SupportFlag != scheduler.RootfsBased {
 		return
 	}
 	for {

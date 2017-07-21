@@ -35,16 +35,17 @@ func (e *TestExecutor) Controller(t *api.Task) (exec.Controller, error) {
 	}, nil
 }
 
-//
+// ImageInspect does nothing.
 func (e *TestExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error) {
 	return types.ImageInspect{}, nil
 }
 
-//
+// GetAllRootFS does nothing.
 func (e *TestExecutor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
 	return nil, nil
 }
 
+// ImageList does nothing.
 func (e *TestExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	return nil, nil
 }
