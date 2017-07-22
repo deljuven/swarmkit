@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 	"github.com/docker/swarmkit/agent/exec"
+	"github.com/docker/swarmkit/agent/exec/dockerapi"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/ca"
 	"github.com/docker/swarmkit/ca/testutils"
@@ -172,4 +174,57 @@ func agentTestEnv(t *testing.T) (*Agent, func()) {
 			cleanup[i]()
 		}
 	}
+}
+
+// TestImageList tests agent get image list
+func TestImageList(t *testing.T) {
+	tc := testutils.NewTestCA(t)
+	defer tc.Stop()
+
+	agentSecurityConfig, err := tc.NewNodeConfig(ca.WorkerRole)
+	require.NoError(t, err)
+
+	addr := "localhost:4949"
+	remotes := remotes.NewRemotes(api.Peer{Addr: addr})
+
+	db, cleanup := storageTestEnv(t)
+	defer cleanup()
+
+	client, err := client.NewClient("unix:///var/run/docker.sock", "", nil, nil)
+	if err != nil {
+		t.Fatalf("failed to get client: %v", err)
+	}
+
+	executor := dockerapi.NewExecutor(client)
+
+	agent, err := New(&Config{
+		Executor:    executor,
+		ConnBroker:  connectionbroker.New(remotes),
+		Credentials: agentSecurityConfig.ClientTLSCreds,
+		DB:          db,
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, agent)
+
+	ctx, _ := context.WithTimeout(context.Background(), 5000*time.Millisecond)
+
+	assert.Equal(t, errAgentNotStarted, agent.Stop(ctx))
+	assert.NoError(t, agent.Start(ctx))
+
+	if err := agent.Start(ctx); err != errAgentStarted {
+		t.Fatalf("expected agent started error: %v", err)
+	}
+
+	images, err := agent.ImageList(ctx)
+	if err != nil {
+		t.Fatalf("expected agent get images error: %v", err)
+	} else {
+		t.Logf("agent get %v images", len(images))
+		for _, img := range images {
+			t.Logf("agent get image : %v ", img)
+		}
+	}
+
+	assert.NoError(t, agent.Stop(ctx))
+
 }

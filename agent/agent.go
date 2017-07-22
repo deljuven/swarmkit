@@ -609,15 +609,15 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 				log.G(ctx).Error("(*Agent).HandleImageQuery is no longer running for chan is closed")
 				return
 			}
-			img, servSpec := (*req).Image, (*req).ServiceSpec
+			img, serviceID := (*req).Image, (*req).ServiceID
 			rootfs, err := a.queryImageLayers(ctx, img)
 			if err != nil {
 				log.G(ctx).Errorf("(*Agent).HandleImageQuery can't get image %v layers", img)
 				continue
 			}
 			a.imageQueryResp <- &scheduler.RootfsQueryResp{
-				ServiceSpec: servSpec,
-				Rootfs:      rootfs.Layers,
+				ServiceID: serviceID,
+				Rootfs:    rootfs.Layers,
 			}
 		}
 	}

@@ -66,14 +66,14 @@ type SyncMessage struct {
 
 // RootfsQueryReq used to query the image info specified by the service in its spec
 type RootfsQueryReq struct {
-	Image       string
-	ServiceSpec string
+	Image     string
+	ServiceID string
 }
 
 // RootfsQueryResp used to handle the resp from RootfsQueryReq
 type RootfsQueryResp struct {
-	ServiceSpec string
-	Rootfs      []string
+	ServiceID string
+	Rootfs    []string
 }
 
 // Scheduler assigns tasks to nodes.
@@ -213,10 +213,10 @@ func (s *Scheduler) syncRootfs() error {
 }
 
 // SyncRootFSMapping is used to query registry for specified image's rootfs
-func (s *Scheduler) SyncRootFSMapping(image string, serviceSpec string) {
+func (s *Scheduler) SyncRootFSMapping(image string, serviceID string) {
 	s.imageQueryReq <- &RootfsQueryReq{
-		Image:       image,
-		ServiceSpec: serviceSpec,
+		Image:     image,
+		ServiceID: serviceID,
 	}
 }
 
@@ -228,11 +228,11 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 				log.G(ctx).Error("(*Scheduler).HandleSyncRootFSMapping is no longer running for chan is closed")
 				return
 			}
-			serviceKey, layers := resp.ServiceSpec, resp.Rootfs
+			serviceID, layers := resp.ServiceID, resp.Rootfs
 			if len(layers) == 0 {
 				layers = nil
 			}
-			s.updateFactorKeys(serviceKey, layers)
+			s.updateFactorKeys(serviceID, layers)
 		}
 	}
 }
@@ -503,7 +503,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		// TODO(aaronl): Once specs are versioned, this will allow a
 		// much more efficient fast path.
 		taskGroupKey := getTaskGroupKey(t)
-		taskGroupKeys[t.ID] = taskGroupKey
+		taskGroupKeys[taskID] = taskGroupKey
 
 		var prefs []*api.PlacementPreference
 		if t.Spec.Placement != nil {
@@ -515,15 +515,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 			img := pref.GetImage()
 			if img != nil {
 				strategy = ImageBase
-				s.toAllocReplicas[taskGroupKey] = int(img.ReplicaDescriptor)
+				s.toAllocReplicas[t.ServiceID] = int(img.ReplicaDescriptor)
 			}
+			break
 		}
 
 		if strategy == ImageBase {
 			if tasksForImageBySpec[taskGroupKey] == nil {
 				tasksForImageBySpec[taskGroupKey] = make(map[string]*api.Task)
 			}
-			tasksForImageBySpec[taskGroupKey][t.ID] = t
+			tasksForImageBySpec[taskGroupKey][taskID] = t
 		} else {
 			if tasksByCommonSpec[taskGroupKey] == nil {
 				tasksByCommonSpec[taskGroupKey] = make(map[string]*api.Task)
@@ -585,36 +586,40 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if t == nil {
 		return
 	}
-	serviceKey := getTaskGroupKey(t)
-	_, ok := s.serviceReplicas[serviceKey]
-	if nodeInfo.ActiveTasksCountByService[serviceKey] > 0 {
+	_, ok := s.serviceReplicas[t.ServiceID]
+	if nodeInfo.ActiveTasksCountByService[t.ServiceID] > 0 {
 		if !ok {
-			s.serviceReplicas[serviceKey] = make(map[string]int)
+			s.serviceReplicas[t.ServiceID] = make(map[string]int)
 		}
-		if _, ok := s.serviceReplicas[serviceKey][nodeInfo.ID]; !ok {
-			s.serviceReplicas[serviceKey][nodeInfo.ID] = 1
+		if _, ok := s.serviceReplicas[t.ServiceID][nodeInfo.ID]; !ok {
+			s.serviceReplicas[t.ServiceID][nodeInfo.ID] = 1
 		}
 		switch SupportFlag {
 		case ServiceBased:
-			s.updateFactorKeys(serviceKey, []string{serviceKey})
+			s.updateFactorKeys(t.ServiceID, []string{t.ServiceID})
 		case ImageBased:
 			img := t.Spec.GetContainer().Image
-			s.updateFactorKeys(serviceKey, []string{img})
+			s.updateFactorKeys(t.ServiceID, []string{img})
 		case RootfsBased:
 			// if service spec is not in the factor mapping, call manager to update the mapping
-			if _, ok := s.factorKeys[serviceKey]; !ok {
-				s.SyncRootFSMapping(t.Spec.GetContainer().Image, serviceKey)
+			if _, ok := s.factorKeys[t.ServiceID]; !ok {
+				s.SyncRootFSMapping(t.Spec.GetContainer().Image, t.ServiceID)
 			}
 		}
 	} else {
 		if ok {
-			delete(s.serviceReplicas[serviceKey], nodeInfo.ID)
-			if len(s.serviceReplicas[serviceKey]) == 0 {
-				s.updateFactorKeys(serviceKey, nil)
+			delete(s.serviceReplicas[t.ServiceID], nodeInfo.ID)
+			if len(s.serviceReplicas[t.ServiceID]) == 0 {
+				s.updateFactorKeys(t.ServiceID, nil)
 			}
 		}
 	}
-	s.toAllocReplicas[serviceKey] = len(s.serviceReplicas[serviceKey])
+
+	replica := int(t.Spec.Placement.Preferences[0].GetImage().ReplicaDescriptor)
+	s.toAllocReplicas[t.ServiceID] = replica - len(s.serviceReplicas[t.ServiceID])
+	if s.toAllocReplicas[t.ServiceID] < 0 {
+		s.toAllocReplicas[t.ServiceID] = 0
+	}
 }
 
 // serviceReplicas is used for image-based service, indicating number of image replica needed to be scheduled
@@ -624,29 +629,30 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 	nodes := make(map[string]NodeInfo)
 	for _, nd := range s.nodeSet.nodes {
 		nodes[nd.ID] = nd
-		for serviceKey, taskGroup := range taskGroups {
+		for _, taskGroup := range taskGroups {
 			var t *api.Task
 			for _, t = range taskGroup {
 				if _, ok := nd.ActiveTasksCountByService[t.ServiceID]; ok {
 					// a mapping from image-based service to nodeslot counting
 					// use service-node mapping at this time
-					if _, ok := s.serviceReplicas[serviceKey]; !ok {
-						s.serviceReplicas[serviceKey] = make(map[string]int)
+					if _, ok := s.serviceReplicas[t.ServiceID]; !ok {
+						s.serviceReplicas[t.ServiceID] = make(map[string]int)
 					}
-					s.serviceReplicas[serviceKey][nd.ID] = 1
+					s.serviceReplicas[t.ServiceID][nd.ID] = 1
 				}
 				break
 			}
 		}
 	}
 
-	// serviceKey for serviceId+spec, for different version
-	for serviceKey := range s.toAllocReplicas {
-		if servReplica, ok := s.serviceReplicas[serviceKey]; ok {
-			s.toAllocReplicas[serviceKey] -= len(servReplica)
+	// serviceID for serviceId+spec, for different version
+	for serviceID := range s.toAllocReplicas {
+		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
+			s.toAllocReplicas[serviceID] -= len(servReplica)
 		}
-		if s.toAllocReplicas[serviceKey] < 0 {
-			s.toAllocReplicas[serviceKey] = 0
+		if s.toAllocReplicas[serviceID] < 0 {
+			log.G(ctx).Infof("%v more replica than needed for service %v", -s.toAllocReplicas[serviceID], serviceID)
+			s.toAllocReplicas[serviceID] = 0
 		}
 	}
 
@@ -685,7 +691,7 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 			// filter nodes
 			for _, node := range nodes {
 				if s.pipeline.Process(&node) {
-					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, servSpec, taskGroup)...)
+					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, t.ServiceID, taskGroup)...)
 				}
 			}
 		}
@@ -705,32 +711,30 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 		nodeID, taskID := fittest.nodeID, fittest.taskID
 		// Skip tasks which were already scheduled because they ended
 		// up in two groups at once.
-		if _, exists := schedulingDecisions[taskID]; exists {
-			continue
+		if _, exists := schedulingDecisions[taskID]; !exists {
+			old := tasks[taskID]
+			// update task and node
+			log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
+			newT := *old
+			newT.NodeID = nodeID
+			newT.Status = api.TaskStatus{
+				State:     api.TaskStateAssigned,
+				Timestamp: ptypes.MustTimestampProto(time.Now()),
+				Message:   "scheduler assigned task to node",
+			}
+			s.allTasks[taskID] = &newT
+
+			nodeInfo, err := s.nodeSet.nodeInfo(nodeID)
+			if err == nil && nodeInfo.addTask(&newT) {
+				s.nodeSet.updateNode(nodeInfo)
+				nodes[nodeID] = nodeInfo
+			}
+
+			s.updateRunningServReplicas(nodeInfo, old)
+
+			schedulingDecisions[taskID] = schedulingDecision{old: old, new: &newT}
+			taskScheduled++
 		}
-
-		old := tasks[taskID]
-		// update task and node
-		log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
-		newT := *old
-		newT.NodeID = nodeID
-		newT.Status = api.TaskStatus{
-			State:     api.TaskStateAssigned,
-			Timestamp: ptypes.MustTimestampProto(time.Now()),
-			Message:   "scheduler assigned task to node",
-		}
-		s.allTasks[taskID] = &newT
-
-		nodeInfo, err := s.nodeSet.nodeInfo(nodeID)
-		if err == nil && nodeInfo.addTask(&newT) {
-			s.nodeSet.updateNode(nodeInfo)
-			nodes[nodeID] = nodeInfo
-		}
-
-		s.updateRunningServReplicas(nodeInfo, old)
-
-		schedulingDecisions[taskID] = schedulingDecision{old: old, new: &newT}
-		taskScheduled++
 
 		// remove scheduled task from tasks to rebuild the heap for next iteration
 		delete(tasks, taskID)
