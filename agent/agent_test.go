@@ -38,12 +38,11 @@ func (e *NoopExecutor) SetNetworkBootstrapKeys([]*api.EncryptionKey) error {
 	return nil
 }
 
-//
 func (e *NoopExecutor) ImageInspect(ctx context.Context, image string) (types.ImageInspect, error) {
 	return types.ImageInspect{}, nil
 }
 
-func (e *NoopExecutor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+func (e *NoopExecutor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
 	return nil, nil
 }
 

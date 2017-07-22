@@ -558,17 +558,20 @@ func nodesEqual(a, b *api.Node) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-func (a *Agent) queryImageLayers(ctx context.Context, image string) (*types.RootFS, error) {
-	img, err := a.config.Executor.ImageInspect(ctx, image)
+// TODO change to manifest digest
+func (a *Agent) queryLayersByImages(ctx context.Context, images []string) (map[string][]string, error) {
+	layers, err := a.config.Executor.GetLayers(ctx, images)
 	if err != nil {
 		return nil, err
 	}
-	return &img.RootFS, nil
+	return layers, nil
 }
 
-// GetAllRootFS get all rootfs on the node by agent
-func (a *Agent) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
-	return a.config.Executor.GetAllRootFS(ctx)
+// GetLayers return layer digests of specified images on the underlying node
+// if images is nil or len is 0, then return all the layers on the node, which key is "all"
+// TODO refactor later
+func (a *Agent) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
+	return a.config.Executor.GetLayers(ctx, images)
 }
 
 // ImageList list all images on the node by agent
@@ -602,6 +605,7 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 	if scheduler.SupportFlag != scheduler.RootfsBased {
 		return
 	}
+
 	for {
 		select {
 		case req, ok := <-a.imageQueryReq:
@@ -610,14 +614,14 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 				return
 			}
 			img, serviceID := (*req).Image, (*req).ServiceID
-			rootfs, err := a.queryImageLayers(ctx, img)
+			layers, err := a.queryLayersByImages(ctx, []string{img})
 			if err != nil {
 				log.G(ctx).Errorf("(*Agent).HandleImageQuery can't get image %v layers", img)
 				continue
 			}
 			a.imageQueryResp <- &scheduler.RootfsQueryResp{
 				ServiceID: serviceID,
-				Rootfs:    rootfs.Layers,
+				Layers:    layers[img],
 			}
 		}
 	}
@@ -661,14 +665,14 @@ func (a *Agent) getRootfsUpdates(ctx context.Context) (appends []string, removal
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	rootfsList, err := a.GetAllRootFS(ctx)
+	layerList, err := a.GetLayers(ctx, nil)
 	if err != nil {
 		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get rootfs list on node")
 		return nil, nil, err
 	}
 	layers := make([]string, 0)
-	for _, rootfs := range rootfsList {
-		for _, layer := range rootfs.Layers {
+	for _, imgs := range layerList {
+		for _, layer := range imgs {
 			layers = append(layers, layer)
 		}
 	}

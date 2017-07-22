@@ -40,8 +40,8 @@ func (e *TestExecutor) ImageInspect(ctx context.Context, image string) (types.Im
 	return types.ImageInspect{}, nil
 }
 
-// GetAllRootFS does nothing.
-func (e *TestExecutor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
+// GetLayers does nothing.
+func (e *TestExecutor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
 	return nil, nil
 }
 

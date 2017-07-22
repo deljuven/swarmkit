@@ -159,8 +159,8 @@ func (e *executor) ImageInspect(ctx context.Context, image string) (types.ImageI
 	return img, nil
 }
 
-func (e *executor) GetAllRootFS(ctx context.Context) (map[string]types.RootFS, error) {
-	layers, err := e.client.AllRootFS(ctx)
+func (e *executor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
+	layers, err := e.client.GetLayers(ctx, images)
 	if err != nil {
 		return nil, err
 	}

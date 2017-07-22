@@ -73,7 +73,7 @@ type RootfsQueryReq struct {
 // RootfsQueryResp used to handle the resp from RootfsQueryReq
 type RootfsQueryResp struct {
 	ServiceID string
-	Rootfs    []string
+	Layers    []string
 }
 
 // Scheduler assigns tasks to nodes.
@@ -228,7 +228,7 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 				log.G(ctx).Error("(*Scheduler).HandleSyncRootFSMapping is no longer running for chan is closed")
 				return
 			}
-			serviceID, layers := resp.ServiceID, resp.Rootfs
+			serviceID, layers := resp.ServiceID, resp.Layers
 			if len(layers) == 0 {
 				layers = nil
 			}
