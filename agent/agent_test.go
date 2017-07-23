@@ -42,11 +42,15 @@ func (e *NoopExecutor) ImageInspect(ctx context.Context, image string) (types.Im
 	return types.ImageInspect{}, nil
 }
 
-func (e *NoopExecutor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
+func (e *NoopExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	return nil, nil
 }
 
-func (e *NoopExecutor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
+func (e *NoopExecutor) GetLayers(ctx context.Context, encodedAuth string) ([]string, error) {
+	return nil, nil
+}
+
+func (e *NoopExecutor) QueryLayersByImage(ctx context.Context, images, encodedAuth string) ([]string, error) {
 	return nil, nil
 }
 

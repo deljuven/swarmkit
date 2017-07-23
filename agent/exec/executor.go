@@ -25,12 +25,14 @@ type Executor interface {
 	// ImageInspect returns image info with the specified image
 	ImageInspect(ctx context.Context, image string) (types.ImageInspect, error)
 
-	// GetLayers return layer digests of specified images on the underlying node
-	// if images is nil or len is 0, then return all the layers on the node
-	GetLayers(ctx context.Context, images []string) (map[string][]string, error)
-
 	// ImageList return all images on the underlying node
 	ImageList(ctx context.Context) ([]types.ImageSummary, error)
+
+	// GetLayers return all the layers digests on the node
+	GetLayers(ctx context.Context, encodedAuth string) ([]string, error)
+
+	// QueryLayersByImage return layer digests of specified image on the underlying node
+	QueryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error)
 }
 
 // SecretsProvider is implemented by objects that can store secrets, typically

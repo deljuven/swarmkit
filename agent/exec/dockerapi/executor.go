@@ -159,14 +159,6 @@ func (e *executor) ImageInspect(ctx context.Context, image string) (types.ImageI
 	return img, nil
 }
 
-func (e *executor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
-	layers, err := e.client.GetLayers(ctx, images)
-	if err != nil {
-		return nil, err
-	}
-	return layers, nil
-}
-
 func (e *executor) ImageList(ctx context.Context) ([]types.ImageSummary, error) {
 	options := types.ImageListOptions{
 		All:     true,
@@ -177,4 +169,13 @@ func (e *executor) ImageList(ctx context.Context) ([]types.ImageSummary, error) 
 		return nil, err
 	}
 	return images, nil
+}
+
+func (e *executor) GetLayers(ctx context.Context, encodedAuth string) ([]string, error) {
+	return e.client.GetLayers(ctx, encodedAuth)
+}
+
+// QueryLayersByImage return layer digests of specified image on the underlying node
+func (e *executor) QueryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error) {
+	return e.client.QueryLayersByImage(ctx, image, encodedAuth)
 }

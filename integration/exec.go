@@ -41,7 +41,12 @@ func (e *TestExecutor) ImageInspect(ctx context.Context, image string) (types.Im
 }
 
 // GetLayers does nothing.
-func (e *TestExecutor) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
+func (e *TestExecutor) GetLayers(ctx context.Context, encodedAuth string) ([]string, error) {
+	return nil, nil
+}
+
+// QueryLayersByImage return layer digests of specified image on the underlying node
+func (e *TestExecutor) QueryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error) {
 	return nil, nil
 }
 

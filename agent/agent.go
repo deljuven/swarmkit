@@ -559,19 +559,19 @@ func nodesEqual(a, b *api.Node) bool {
 }
 
 // TODO change to manifest digest
-func (a *Agent) queryLayersByImages(ctx context.Context, images []string) (map[string][]string, error) {
-	layers, err := a.config.Executor.GetLayers(ctx, images)
-	if err != nil {
-		return nil, err
-	}
-	return layers, nil
+func (a *Agent) queryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error) {
+	return a.config.Executor.QueryLayersByImage(ctx, image, encodedAuth)
 }
 
-// GetLayers return layer digests of specified images on the underlying node
-// if images is nil or len is 0, then return all the layers on the node, which key is "all"
-// TODO refactor later
-func (a *Agent) GetLayers(ctx context.Context, images []string) (map[string][]string, error) {
-	return a.config.Executor.GetLayers(ctx, images)
+// GetLayers return all the layers digests on the node
+// TODO refactor later, return value should be defined struct
+func (a *Agent) GetLayers(ctx context.Context, encodedAuth string) ([]string, error) {
+	return a.config.Executor.GetLayers(ctx, encodedAuth)
+}
+
+// QueryLayersByImage return layer digests of specified image on the underlying node
+func (a *Agent) QueryLayersByImage(ctx context.Context, image string, encodedAuth string) ([]string, error) {
+	return a.config.Executor.QueryLayersByImage(ctx, image, encodedAuth)
 }
 
 // ImageList list all images on the node by agent
@@ -613,15 +613,16 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 				log.G(ctx).Error("(*Agent).HandleImageQuery is no longer running for chan is closed")
 				return
 			}
-			img, serviceID := (*req).Image, (*req).ServiceID
-			layers, err := a.queryLayersByImages(ctx, []string{img})
+			request := (*req)
+			img, serviceID, authConfig := request.Image, request.ServiceID, request.EncodedAuth
+			layers, err := a.queryLayersByImage(ctx, img, authConfig)
 			if err != nil {
 				log.G(ctx).Errorf("(*Agent).HandleImageQuery can't get image %v layers", img)
 				continue
 			}
 			a.imageQueryResp <- &scheduler.RootfsQueryResp{
 				ServiceID: serviceID,
-				Layers:    layers[img],
+				Layers:    layers,
 			}
 		}
 	}
@@ -665,16 +666,10 @@ func (a *Agent) getRootfsUpdates(ctx context.Context) (appends []string, removal
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	layerList, err := a.GetLayers(ctx, nil)
+	layers, err := a.GetLayers(ctx, "")
 	if err != nil {
 		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get rootfs list on node")
 		return nil, nil, err
-	}
-	layers := make([]string, 0)
-	for _, imgs := range layerList {
-		for _, layer := range imgs {
-			layers = append(layers, layer)
-		}
 	}
 	appends, removals = a.getUpdates(layers)
 

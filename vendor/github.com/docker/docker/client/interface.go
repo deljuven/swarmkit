@@ -84,7 +84,8 @@ type ImageAPIClient interface {
 	ImageSave(ctx context.Context, images []string) (io.ReadCloser, error)
 	ImageTag(ctx context.Context, image, ref string) error
 	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (types.ImagesPruneReport, error)
-	GetLayers(ctx context.Context, images []string) (map[string][]string, error)
+	GetLayers(ctx context.Context, encodedAuth string) ([]string, error)
+	QueryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error)
 }
 
 // NetworkAPIClient defines API client methods for the networks

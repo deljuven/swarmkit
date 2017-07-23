@@ -66,8 +66,9 @@ type SyncMessage struct {
 
 // RootfsQueryReq used to query the image info specified by the service in its spec
 type RootfsQueryReq struct {
-	Image     string
-	ServiceID string
+	Image       string
+	ServiceID   string
+	EncodedAuth string
 }
 
 // RootfsQueryResp used to handle the resp from RootfsQueryReq
@@ -213,10 +214,12 @@ func (s *Scheduler) syncRootfs() error {
 }
 
 // SyncRootFSMapping is used to query registry for specified image's rootfs
-func (s *Scheduler) SyncRootFSMapping(image string, serviceID string) {
+// TODO call this at first for warming up
+func (s *Scheduler) SyncRootFSMapping(image string, serviceID string, encodedAuth string) {
 	s.imageQueryReq <- &RootfsQueryReq{
-		Image:     image,
-		ServiceID: serviceID,
+		Image:       image,
+		ServiceID:   serviceID,
+		EncodedAuth: encodedAuth,
 	}
 }
 
@@ -603,7 +606,8 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 		case RootfsBased:
 			// if service spec is not in the factor mapping, call manager to update the mapping
 			if _, ok := s.factorKeys[t.ServiceID]; !ok {
-				s.SyncRootFSMapping(t.Spec.GetContainer().Image, t.ServiceID)
+				containerSpec := t.Spec.GetContainer()
+				s.SyncRootFSMapping(containerSpec.Image, t.ServiceID, containerSpec.PullOptions.RegistryAuth)
 			}
 		}
 	} else {
