@@ -11,6 +11,8 @@ import (
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"golang.org/x/net/context"
+	"math/big"
+	"strings"
 )
 
 const (
@@ -67,14 +69,13 @@ type SyncMessage struct {
 // RootfsQueryReq used to query the image info specified by the service in its spec
 type RootfsQueryReq struct {
 	Image       string
-	ServiceID   string
 	EncodedAuth string
 }
 
 // RootfsQueryResp used to handle the resp from RootfsQueryReq
 type RootfsQueryResp struct {
-	ServiceID string
-	Layers    []string
+	Image  string
+	Layers []string
 }
 
 // Scheduler assigns tasks to nodes.
@@ -94,7 +95,7 @@ type Scheduler struct {
 
 	// to alloc task replica mapping to nodes
 	toAllocReplicas map[string]int
-	// change when task updated, created and deleted, used for counting running replica number
+	// change when task updated, created and deleted, used for counting running replica number, mapping from service to node
 	serviceReplicas map[string]map[string]int
 
 	// rootfs to node mapping
@@ -180,7 +181,7 @@ func (s *Scheduler) setupTasksList(tx store.ReadTx) error {
 	return nil
 }
 
-func (s *Scheduler) syncRootfs() error {
+func (s *Scheduler) syncRootfs(ctx context.Context) error {
 	var syncMapping map[string]map[string]int
 	switch SupportFlag {
 	case RootfsBased:
@@ -209,17 +210,22 @@ func (s *Scheduler) syncRootfs() error {
 					delete(syncMapping[item], nodeID)
 				}
 			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
 
 // SyncRootFSMapping is used to query registry for specified image's rootfs
-// TODO call this at first for warming up
-func (s *Scheduler) SyncRootFSMapping(image string, serviceID string, encodedAuth string) {
-	s.imageQueryReq <- &RootfsQueryReq{
+func (s *Scheduler) SyncRootFSMapping(ctx context.Context, image string, encodedAuth string) error {
+	select {
+	case s.imageQueryReq <- &RootfsQueryReq{
 		Image:       image,
-		ServiceID:   serviceID,
 		EncodedAuth: encodedAuth,
+	}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -231,11 +237,11 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 				log.G(ctx).Error("(*Scheduler).HandleSyncRootFSMapping is no longer running for chan is closed")
 				return
 			}
-			serviceID, layers := resp.ServiceID, resp.Layers
+			image, layers := resp.Image, resp.Layers
 			if len(layers) == 0 {
 				layers = nil
 			}
-			s.updateFactorKeys(serviceID, layers)
+			s.updateFactorKeys(image, layers, true)
 		}
 	}
 }
@@ -251,7 +257,32 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	defer cancel()
 
-	go s.syncRootfs()
+	imgs := make(map[string]struct{})
+	for _, t := range s.allTasks {
+		switch SupportFlag {
+		case ServiceBased:
+			s.updateFactorKeys(t.ServiceID, []string{t.ServiceID}, false)
+		case ImageBased:
+			img := t.Spec.GetContainer().Image
+			s.updateFactorKeys(img, []string{img}, false)
+		case RootfsBased:
+			// if service spec is not in the factor mapping, call manager to update the mapping
+			img := t.Spec.GetContainer().Image
+			if _, ok := imgs[img]; !ok {
+				if _, ok := s.factorKeys[img]; !ok {
+					imgs[img] = struct{}{}
+					containerSpec := t.Spec.GetContainer()
+					go func() {
+						err := s.SyncRootFSMapping(ctx, img, containerSpec.PullOptions.RegistryAuth)
+						if err != nil {
+							log.G(ctx).Errorf("failed to query image %v layers, with error %v", containerSpec.Image, err)
+						}
+					}()
+				}
+			}
+		}
+	}
+	go s.syncRootfs(ctx)
 	go s.handleSyncRootFSMapping(ctx)
 
 	// Validate resource for tasks from preassigned tasks
@@ -574,47 +605,39 @@ func getTaskGroupKey(t *api.Task) (taskGroupKey string) {
 	return
 }
 
-func (s *Scheduler) updateFactorKeys(key string, factors []string) {
+// for service based, key is service id; for image-based and rootfs-based, key is image string
+// delete operation only active for service-based
+func (s *Scheduler) updateFactorKeys(key string, factors []string, force bool) {
+	if factors == nil {
+		delete(s.factorKeys, key)
+	}
 	if _, ok := s.factorKeys[key]; ok {
-		if factors == nil {
-			delete(s.factorKeys, key)
+		if !force {
+			return
 		}
-		return
 	}
 	s.factorKeys[key] = factors
 }
 
 // update factor mapping after nodeinfo updating task status
+// TODO(deljuven) reconsider about this design
 func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if t == nil {
 		return
 	}
 	_, ok := s.serviceReplicas[t.ServiceID]
-	if nodeInfo.ActiveTasksCountByService[t.ServiceID] > 0 {
+	if counts, exist := nodeInfo.ActiveTasksCountByService[t.ServiceID]; exist && counts > 0 {
 		if !ok {
 			s.serviceReplicas[t.ServiceID] = make(map[string]int)
 		}
 		if _, ok := s.serviceReplicas[t.ServiceID][nodeInfo.ID]; !ok {
-			s.serviceReplicas[t.ServiceID][nodeInfo.ID] = 1
-		}
-		switch SupportFlag {
-		case ServiceBased:
-			s.updateFactorKeys(t.ServiceID, []string{t.ServiceID})
-		case ImageBased:
-			img := t.Spec.GetContainer().Image
-			s.updateFactorKeys(t.ServiceID, []string{img})
-		case RootfsBased:
-			// if service spec is not in the factor mapping, call manager to update the mapping
-			if _, ok := s.factorKeys[t.ServiceID]; !ok {
-				containerSpec := t.Spec.GetContainer()
-				s.SyncRootFSMapping(containerSpec.Image, t.ServiceID, containerSpec.PullOptions.RegistryAuth)
-			}
+			s.serviceReplicas[t.ServiceID][nodeInfo.ID] = counts
 		}
 	} else {
 		if ok {
 			delete(s.serviceReplicas[t.ServiceID], nodeInfo.ID)
 			if len(s.serviceReplicas[t.ServiceID]) == 0 {
-				s.updateFactorKeys(t.ServiceID, nil)
+				s.updateFactorKeys(t.ServiceID, nil, false)
 			}
 		}
 	}
@@ -649,7 +672,6 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 		}
 	}
 
-	// serviceID for serviceId+spec, for different version
 	for serviceID := range s.toAllocReplicas {
 		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
 			s.toAllocReplicas[serviceID] -= len(servReplica)
@@ -663,17 +685,17 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 	//specs := make(map[string]api.TaskSpec)
 	taskScheduled := 0
 
-	drfHeap := nodeDRFHeap{}
-	drfHeap.toAllocReplicas = &s.toAllocReplicas
-	drfHeap.factorKeyMapping = &s.factorKeys
+	var coherenceMapping *map[string]map[string]int
 	switch SupportFlag {
 	case RootfsBased:
-		drfHeap.coherenceMapping = &s.rootfsMapping
+		coherenceMapping = &s.rootfsMapping
 	case ImageBased:
-		drfHeap.coherenceMapping = &s.imageMapping
+		coherenceMapping = &s.imageMapping
 	case ServiceBased:
-		drfHeap.coherenceMapping = &s.serviceReplicas
+		coherenceMapping = &s.serviceReplicas
 	}
+	drfHeap := s.initDrfMinHeap(&s.toAllocReplicas, &s.factorKeys, coherenceMapping)
+
 	for {
 		// init drf heap
 		drfHeap.nodes = make([]drfNode, 0)
@@ -705,8 +727,8 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 		}
 
 		// get drf result and apply it
-		heap.Init(&drfHeap)
-		fittest, ok := heap.Pop(&drfHeap).(drfNode)
+		heap.Init(drfHeap)
+		fittest, ok := heap.Pop(drfHeap).(drfNode)
 		if !ok {
 			log.G(ctx).Errorf("drf heap failed")
 			break
@@ -917,6 +939,79 @@ func (s *Scheduler) scheduleTaskGroup(ctx context.Context, taskGroup map[string]
 	if len(taskGroup) != 0 {
 		s.noSuitableNode(ctx, taskGroup, schedulingDecisions)
 	}
+}
+
+func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *map[string][]string, coherenceMapping *map[string]map[string]int) *nodeDRFHeap {
+	drfHeap := &nodeDRFHeap{}
+	drfHeap.toAllocReplicas = toAllocReplicas
+	drfHeap.factorKeyMapping = factorKeys
+	drfHeap.coherenceMapping = coherenceMapping
+	drfHeap.drfLess = func(ni, nj *drfNode, h *nodeDRFHeap) bool {
+		if h.toAllocReplicas != nil {
+			toReplicas := *h.toAllocReplicas
+			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
+				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
+			}
+		}
+
+		if h.coherenceMapping != nil && h.factorKeyMapping != nil {
+			coherencesMapping := *h.coherenceMapping
+			factorKeysMapping := *h.factorKeyMapping
+			//coherenceI, coherenceJ := 0,0
+			factorKeysI, okI := factorKeysMapping[ni.key]
+			factorKeysJ, okJ := factorKeysMapping[nj.key]
+			getCoherenceFactor := func(keys []string, nodeId string) int {
+				final := 0
+				for _, key := range keys {
+					if factor, ok := coherencesMapping[key]; ok {
+						if value, ok := factor[nodeId]; ok && value > 0 {
+							final += value
+						} else {
+							break
+						}
+					} else {
+						break
+					}
+				}
+				return final
+			}
+			if okI && okJ {
+				coherenceI, coherenceJ := getCoherenceFactor(factorKeysI, ni.nodeID), getCoherenceFactor(factorKeysJ, nj.nodeID)
+				if coherenceI != coherenceJ {
+					return coherenceI > coherenceJ
+				}
+			} else if okI {
+				return true
+			} else if okJ {
+				return false
+			}
+		}
+
+		// drf compare
+		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
+		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
+		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
+		if cmp < 0 {
+			return true
+		} else if cmp > 0 {
+			return false
+		}
+
+		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
+		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
+		if typeI == typeJ {
+			if leftI == leftJ {
+				return strings.Compare(ni.nodeID, nj.nodeID) < 0
+			}
+			return leftI < leftJ
+		} else if typeI == cpu {
+			return true
+		} else {
+			return false
+		}
+	}
+	return drfHeap
 }
 
 func (s *Scheduler) scheduleNTasksOnSubtree(ctx context.Context, n int, taskGroup map[string]*api.Task, tree *decisionTree, schedulingDecisions map[string]schedulingDecision, nodeLess func(a *NodeInfo, b *NodeInfo) bool) int {

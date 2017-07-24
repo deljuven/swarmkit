@@ -1,9 +1,9 @@
 package scheduler
 
-import "github.com/docker/swarmkit/api"
 import (
 	"math/big"
-	"strings"
+
+	"github.com/docker/swarmkit/api"
 )
 
 type nodeMaxHeap struct {
@@ -52,11 +52,27 @@ type drfNode struct {
 	nodeID            string
 	taskID            string
 	serviceID         string
+	key               string
 	dominantReserved  drfResource
 	dominantAvailable drfResource
 }
 
-func getDrfResource(nodeInfo NodeInfo, task api.Task) (taskReserved, nodeAvailable drfResource) {
+func getMaxDrfResource(nodeInfo NodeInfo, task *api.Task) (taskReserved, nodeAvailable drfResource) {
+	reservations := taskReservations(task.Spec)
+	available := nodeInfo.AvailableResources
+	available.NanoCPUs += reservations.NanoCPUs
+	available.MemoryBytes += reservations.MemoryBytes
+	if big.NewRat(reservations.MemoryBytes, available.MemoryBytes).Cmp(big.NewRat(reservations.NanoCPUs, available.NanoCPUs)) > 0 {
+		taskReserved = drfResource{reservations.MemoryBytes, memory}
+		nodeAvailable = drfResource{available.MemoryBytes, memory}
+	} else {
+		taskReserved = drfResource{reservations.NanoCPUs, cpu}
+		nodeAvailable = drfResource{available.NanoCPUs, cpu}
+	}
+	return
+}
+
+func getDrfResource(nodeInfo NodeInfo, task *api.Task) (taskReserved, nodeAvailable drfResource) {
 	reservations := taskReservations(task.Spec)
 	available := nodeInfo.AvailableResources
 	if big.NewRat(reservations.MemoryBytes, available.MemoryBytes).Cmp(big.NewRat(reservations.NanoCPUs, available.NanoCPUs)) > 0 {
@@ -69,12 +85,37 @@ func getDrfResource(nodeInfo NodeInfo, task api.Task) (taskReserved, nodeAvailab
 	return
 }
 
-func newDRFNode(node NodeInfo, serviceID string, task api.Task) *drfNode {
+func newDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
 	drfNode := &drfNode{}
 	drfNode.nodeID = node.ID
 	drfNode.taskID = task.ID
 	drfNode.serviceID = serviceID
+	switch SupportFlag {
+	case RootfsBased:
+		drfNode.key = serviceID
+	case ImageBased:
+		fallthrough
+	case ServiceBased:
+		drfNode.key = task.Spec.GetContainer().Image
+	}
 	drfNode.dominantReserved, drfNode.dominantAvailable = getDrfResource(node, task)
+	return drfNode
+}
+
+func newMaxDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
+	drfNode := &drfNode{}
+	drfNode.nodeID = node.ID
+	drfNode.taskID = task.ID
+	drfNode.serviceID = serviceID
+	switch SupportFlag {
+	case RootfsBased:
+		drfNode.key = serviceID
+	case ImageBased:
+		fallthrough
+	case ServiceBased:
+		drfNode.key = task.Spec.GetContainer().Image
+	}
+	drfNode.dominantReserved, drfNode.dominantAvailable = getMaxDrfResource(node, task)
 	return drfNode
 }
 
@@ -89,7 +130,15 @@ func newDRFNodes(node NodeInfo, serviceID string, tasks map[string]*api.Task) []
 		nodes[index].nodeID = node.ID
 		nodes[index].taskID = taskList[index].ID
 		nodes[index].serviceID = serviceID
-		nodes[index].dominantReserved, nodes[index].dominantAvailable = getDrfResource(node, *taskList[index])
+		switch SupportFlag {
+		case RootfsBased:
+			nodes[index].key = serviceID
+		case ImageBased:
+			fallthrough
+		case ServiceBased:
+			nodes[index].key = taskList[index].Spec.GetContainer().Image
+		}
+		nodes[index].dominantReserved, nodes[index].dominantAvailable = getDrfResource(node, taskList[index])
 	}
 	return nodes
 }
@@ -102,6 +151,7 @@ type nodeDRFHeap struct {
 	coherenceMapping *map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
 	factorKeyMapping *map[string][]string
+	drfLess          func(*drfNode, *drfNode, *nodeDRFHeap) bool
 }
 
 func (h nodeDRFHeap) Len() int {
@@ -114,72 +164,7 @@ func (h nodeDRFHeap) Swap(i, j int) {
 
 func (h nodeDRFHeap) Less(i, j int) bool {
 	// reversed to make a drf-heap
-	drfLess := func(ni, nj *drfNode) bool {
-		if h.toAllocReplicas != nil {
-			toReplicas := *h.toAllocReplicas
-			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
-				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
-			}
-		}
-
-		if h.coherenceMapping != nil {
-			coherencesMapping := *h.coherenceMapping
-			factorKeysMapping := *h.factorKeyMapping
-			//coherenceI, coherenceJ := 0,0
-			factorKeysI, okI := factorKeysMapping[ni.serviceID]
-			factorKeysJ, okJ := factorKeysMapping[nj.serviceID]
-			getFactor := func(keys []string, nodeId string) int {
-				final := 0
-				for _, key := range keys {
-					if factor, ok := coherencesMapping[key]; ok {
-						if value, ok := factor[nodeId]; ok {
-							final += value
-						} else {
-							break
-						}
-					} else {
-						break
-					}
-				}
-				return final
-			}
-			if okI && okJ {
-				coherenceI, coherenceJ := getFactor(factorKeysI, ni.nodeID), getFactor(factorKeysJ, nj.nodeID)
-				if coherenceI != coherenceJ {
-					return coherenceI > coherenceJ
-				}
-			} else if okI {
-				return true
-			} else if okJ {
-				return false
-			}
-		}
-
-		// drf compare
-		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
-		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
-		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
-		if cmp < 0 {
-			return true
-		} else if cmp > 0 {
-			return false
-		}
-
-		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
-		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
-		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
-		if typeI == typeJ {
-			if leftI == leftJ {
-				return strings.Compare(ni.nodeID, nj.nodeID) < 0
-			}
-			return leftI < leftJ
-		} else if typeI == cpu {
-			return true
-		} else {
-			return false
-		}
-	}
-	return drfLess(&h.nodes[i], &h.nodes[j])
+	return h.drfLess(&h.nodes[i], &h.nodes[j], &h)
 }
 
 func (h *nodeDRFHeap) Push(x interface{}) {
@@ -200,7 +185,7 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstrain
 	for _, node := range nodes {
 		for _, task := range tasks {
 			if meetsConstraints(&node) {
-				h.nodes = append(h.nodes, *newDRFNode(node, task.ServiceID, task))
+				h.nodes = append(h.nodes, *newDRFNode(node, task.ServiceID, &task))
 			}
 		}
 	}

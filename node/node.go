@@ -354,7 +354,6 @@ func (n *Node) run(ctx context.Context) (err error) {
 				n.agent.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
 				n.manager.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
 			case <-workerRole:
-				n.imageQueryReq, n.imageQueryResp = nil, nil
 			}
 			waitRoleCancel()
 		}
@@ -390,6 +389,9 @@ func (n *Node) Stop(ctx context.Context) error {
 	n.stopOnce.Do(func() {
 		close(n.stopped)
 	})
+
+	close(n.imageQueryReq)
+	close(n.imageQueryResp)
 
 	select {
 	case <-n.closed:

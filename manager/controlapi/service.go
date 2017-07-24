@@ -496,8 +496,6 @@ func (s *Server) CreateService(ctx context.Context, request *api.CreateServiceRe
 		return nil, err
 	}
 
-	// TODO use docker registry api to search image info
-
 	return &api.CreateServiceResponse{
 		Service: service,
 	}, nil
@@ -543,6 +541,58 @@ func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRe
 	})
 	if service == nil {
 		return nil, grpc.Errorf(codes.NotFound, "service %s not found", request.ServiceID)
+	}
+
+	isPrefConflict := func(origin, replace *api.ServiceSpec) (bool, error) {
+		strategy := scheduler.None
+		previous := uint64(0)
+		if origin.Task.Placement != nil {
+			old := origin.Task.Placement.Preferences
+			for _, pref := range old {
+				img := pref.GetImage()
+				if img != nil {
+					strategy = scheduler.ImageBase
+					previous = img.ReplicaDescriptor
+					break
+				}
+				spread := pref.GetSpread()
+				if spread != nil {
+					strategy = scheduler.SpreadOver
+					break
+				}
+			}
+		}
+
+		if strategy == scheduler.None {
+			return false, nil
+		}
+
+		if replace.Task.Placement != nil {
+			newPrefs := replace.Task.Placement.Preferences
+			for _, pref := range newPrefs {
+				img := pref.GetImage()
+				if img != nil {
+					switch strategy {
+					case scheduler.SpreadOver:
+						return true, grpc.Errorf(codes.InvalidArgument, "Service %v cannot be updated for changing strategy between spread-over and image-based", request.ServiceID)
+					case scheduler.ImageBase:
+						if img.ReplicaDescriptor != previous {
+							return true, grpc.Errorf(codes.Unimplemented, "Service %v not supported to update its image-based replica", request.ServiceID)
+						}
+					}
+				}
+				spread := pref.GetSpread()
+				if spread != nil && strategy == scheduler.ImageBase {
+					return true, grpc.Errorf(codes.InvalidArgument, "Service %v cannot be updated for changing strategy between spread-over and image-based", request.ServiceID)
+				}
+			}
+		}
+
+		return false, nil
+	}
+
+	if ok, err := isPrefConflict(&service.Spec, request.Spec); ok {
+		return nil, grpc.Errorf(codes.InvalidArgument, "error occurs for %v", err)
 	}
 
 	if request.Spec.Endpoint != nil && !reflect.DeepEqual(request.Spec.Endpoint, service.Spec.Endpoint) {

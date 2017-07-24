@@ -558,13 +558,11 @@ func nodesEqual(a, b *api.Node) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// TODO change to manifest digest
 func (a *Agent) queryLayersByImage(ctx context.Context, image, encodedAuth string) ([]string, error) {
 	return a.config.Executor.QueryLayersByImage(ctx, image, encodedAuth)
 }
 
 // GetLayers return all the layers digests on the node
-// TODO refactor later, return value should be defined struct
 func (a *Agent) GetLayers(ctx context.Context, encodedAuth string) ([]string, error) {
 	return a.config.Executor.GetLayers(ctx, encodedAuth)
 }
@@ -613,17 +611,23 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 				log.G(ctx).Error("(*Agent).HandleImageQuery is no longer running for chan is closed")
 				return
 			}
-			request := (*req)
-			img, serviceID, authConfig := request.Image, request.ServiceID, request.EncodedAuth
+			img, authConfig := req.Image, req.EncodedAuth
 			layers, err := a.queryLayersByImage(ctx, img, authConfig)
 			if err != nil {
 				log.G(ctx).Errorf("(*Agent).HandleImageQuery can't get image %v layers", img)
 				continue
 			}
-			a.imageQueryResp <- &scheduler.RootfsQueryResp{
-				ServiceID: serviceID,
-				Layers:    layers,
-			}
+			go func() {
+				select {
+				case a.imageQueryResp <- &scheduler.RootfsQueryResp{
+					Image:  img,
+					Layers: layers,
+				}:
+				}
+			}()
+		case <-ctx.Done():
+			log.G(ctx).Errorf("(*Agent).HandleImageQuery failed cause: %v", ctx.Err())
+			return
 		}
 	}
 

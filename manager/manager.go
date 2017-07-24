@@ -928,6 +928,7 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 	m.scheduler.InitSyncChan(m.syncChan)
 	m.dispatcher.InitSyncChan(m.syncChan)
 
+	m.replicatedOrchestrator.ImageQueryPrepare(m.imageQueryReq)
 	m.scheduler.ImageQueryPrepare(m.imageQueryReq, m.imageQueryResp)
 
 	// TODO(stevvooe): Allocate a context that can be used to
