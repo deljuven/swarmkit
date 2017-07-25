@@ -29,6 +29,9 @@ type Orchestrator struct {
 	cluster *api.Cluster // local cluster instance
 
 	imageQueryReq chan *scheduler.RootfsQueryReq
+
+	scaleDownReq  chan *scheduler.ScaleDownReq
+	scaleDownResp chan *scheduler.ScaleDownResp
 }
 
 // NewReplicatedOrchestrator creates a new replicated Orchestrator.
@@ -52,6 +55,12 @@ func (r *Orchestrator) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQue
 		return
 	}
 	r.imageQueryReq = imageQueryReq
+}
+
+// InitScaleChan inits the scale chan shared with orchestrator
+func (r *Orchestrator) InitScaleChan(scaleDownReq chan *scheduler.ScaleDownReq, scaleDownResp chan *scheduler.ScaleDownResp) {
+	r.scaleDownReq = scaleDownReq
+	r.scaleDownResp = scaleDownResp
 }
 
 // SyncRootFSMapping is used to query registry for specified image's rootfs
@@ -98,6 +107,8 @@ func (r *Orchestrator) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	go r.HandleScaleDownResp(ctx)
 
 	r.tick(ctx)
 

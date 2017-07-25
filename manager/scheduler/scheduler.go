@@ -1,18 +1,16 @@
 package scheduler
 
 import (
+	"math/big"
+	"strings"
 	"time"
 
-	"container/heap"
-	"errors"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager/state"
 	"github.com/docker/swarmkit/manager/state/store"
 	"github.com/docker/swarmkit/protobuf/ptypes"
 	"golang.org/x/net/context"
-	"math/big"
-	"strings"
 )
 
 const (
@@ -78,6 +76,19 @@ type RootfsQueryResp struct {
 	Layers []string
 }
 
+// ScaleDownReq used in orchestrator for getting related service scale down policy, computed by scheduler
+type ScaleDownReq struct {
+	Service  *api.Service
+	Required uint64
+}
+
+// ScaleDownResp is the scheduler calculate the scale down policy and return result
+type ScaleDownResp struct {
+	Service  *api.Service
+	Slots    map[uint64]struct{}
+	Required uint64
+}
+
 // Scheduler assigns tasks to nodes.
 type Scheduler struct {
 	store           *store.MemoryStore
@@ -103,13 +114,16 @@ type Scheduler struct {
 	// image to node mapping
 	imageMapping map[string]map[string]int
 
-	// mapping from service spec to service or img or rootfs
+	// mapping from service id to service or img or rootfs
 	factorKeys map[string][]string
 
 	syncChan chan *SyncMessage
 
 	imageQueryReq  chan *RootfsQueryReq
 	imageQueryResp chan *RootfsQueryResp
+
+	scaleDownReq  chan *ScaleDownReq
+	scaleDownResp chan *ScaleDownResp
 }
 
 // New creates a new scheduler.
@@ -132,7 +146,19 @@ func New(store *store.MemoryStore) *Scheduler {
 
 // InitSyncChan inits the sync chan shared with dispatcher
 func (s *Scheduler) InitSyncChan(syncChan chan *SyncMessage) {
+	if SupportFlag == ServiceBased {
+		return
+	}
 	s.syncChan = syncChan
+}
+
+// InitScaleChan inits the scale chan shared with orchestrator
+func (s *Scheduler) InitScaleChan(scaleDownReq chan *ScaleDownReq, scaleDownResp chan *ScaleDownResp) {
+	if SupportFlag != RootfsBased {
+		return
+	}
+	s.scaleDownReq = scaleDownReq
+	s.scaleDownResp = scaleDownResp
 }
 
 // ImageQueryPrepare inits the query chan shared with agent
@@ -181,7 +207,7 @@ func (s *Scheduler) setupTasksList(tx store.ReadTx) error {
 	return nil
 }
 
-func (s *Scheduler) syncRootfs(ctx context.Context) error {
+func (s *Scheduler) syncRootfs(ctx context.Context) {
 	var syncMapping map[string]map[string]int
 	switch SupportFlag {
 	case RootfsBased:
@@ -189,13 +215,14 @@ func (s *Scheduler) syncRootfs(ctx context.Context) error {
 	case ImageBased:
 		syncMapping = s.imageMapping
 	case ServiceBased:
-		return nil
+		return
 	}
 	for {
 		select {
 		case msg := <-s.syncChan:
 			if msg == nil {
-				return errors.New("read nil while synchronizing from dispatcher")
+				log.G(ctx).Error("(*Scheduler).syncRootfs read nil while synchronizing from dispatcher")
+				return
 			}
 			syncMsg := *msg
 			nodeID := syncMsg.NodeID
@@ -211,7 +238,8 @@ func (s *Scheduler) syncRootfs(ctx context.Context) error {
 				}
 			}
 		case <-ctx.Done():
-			return ctx.Err()
+			log.G(ctx).Errorf("(*Scheduler).syncRootfs is no longer running for %v", ctx.Err())
+			return
 		}
 	}
 }
@@ -242,6 +270,37 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 				layers = nil
 			}
 			s.updateFactorKeys(image, layers, true)
+		case <-ctx.Done():
+			log.G(ctx).Errorf("(*Scheduler).HandleSyncRootFSMapping is no longer running for %v", ctx.Err())
+			return
+		}
+	}
+}
+
+func (s *Scheduler) handleScaleDown(ctx context.Context) {
+	for {
+		select {
+		case req, ok := <-s.scaleDownReq:
+			if !ok {
+				log.G(ctx).Error("(*Scheduler).handleScaleDown is no longer running for chan is closed")
+				return
+			}
+			service, required := req.Service, req.Required
+			slots := s.scaleDown(ctx, service.ID, required)
+			go func() {
+				select {
+				case s.scaleDownResp <- &ScaleDownResp{
+					Service:  service,
+					Slots:    slots,
+					Required: required,
+				}:
+				case <-ctx.Done():
+					log.G(ctx).Errorf("(*Scheduler).handleScaleDown is no longer running for %v", ctx.Err())
+				}
+			}()
+		case <-ctx.Done():
+			log.G(ctx).Errorf("(*Scheduler).handleScaleDown is no longer running for %v", ctx.Err())
+			return
 		}
 	}
 }
@@ -284,6 +343,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	go s.syncRootfs(ctx)
 	go s.handleSyncRootFSMapping(ctx)
+	go s.handleScaleDown(ctx)
 
 	// Validate resource for tasks from preassigned tasks
 	// do this before other tasks because preassigned tasks like
@@ -523,6 +583,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 	tasksForImageBySpec := make(map[string]map[string]*api.Task)
 	taskGroupKeys := make(map[string]string)
 	tasks := make(map[string]*api.Task)
+	imgBased := 0
 
 	for taskID, t := range s.unassignedTasks {
 		if t == nil || t.NodeID != "" {
@@ -559,6 +620,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 				tasksForImageBySpec[taskGroupKey] = make(map[string]*api.Task)
 			}
 			tasksForImageBySpec[taskGroupKey][taskID] = t
+			imgBased++
 		} else {
 			if tasksByCommonSpec[taskGroupKey] == nil {
 				tasksByCommonSpec[taskGroupKey] = make(map[string]*api.Task)
@@ -571,7 +633,17 @@ func (s *Scheduler) tick(ctx context.Context) {
 	// first do service with image base strategy,then spread over strategy
 	// for image base, use drf to select suitable nodes, drf return the best fit node per time
 	// so for n tasks, there should be n drf calls
-	s.scheduleImageBaseTasks(ctx, tasksForImageBySpec, tasks, taskGroupKeys, schedulingDecisions)
+	scheduled := s.scheduleImageBaseTasks(ctx, tasksForImageBySpec, tasks, taskGroupKeys, schedulingDecisions)
+
+	if scheduled < imgBased {
+		leftTasks := make(map[string]*api.Task)
+		for _, ts := range tasksForImageBySpec {
+			for taskID, t := range ts {
+				leftTasks[taskID] = t
+			}
+		}
+		s.noSuitableNode(ctx, leftTasks, schedulingDecisions)
+	}
 
 	for _, taskGroup := range tasksByCommonSpec {
 		s.scheduleTaskGroup(ctx, taskGroup, schedulingDecisions)
@@ -620,7 +692,6 @@ func (s *Scheduler) updateFactorKeys(key string, factors []string, force bool) {
 }
 
 // update factor mapping after nodeinfo updating task status
-// TODO(deljuven) reconsider about this design
 func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if t == nil {
 		return
@@ -647,135 +718,6 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if s.toAllocReplicas[t.ServiceID] < 0 {
 		s.toAllocReplicas[t.ServiceID] = 0
 	}
-}
-
-// serviceReplicas is used for image-based service, indicating number of image replica needed to be scheduled
-func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[string]map[string]*api.Task, tasks map[string]*api.Task, taskGroupKeys map[string]string, schedulingDecisions map[string]schedulingDecision) int {
-	//tasksByImage := make([]*api.Task, 0)
-	// cause drf change resource usage during calculation, use nodes to copy the nodeset.nodes
-	nodes := make(map[string]NodeInfo)
-	for _, nd := range s.nodeSet.nodes {
-		nodes[nd.ID] = nd
-		for _, taskGroup := range taskGroups {
-			var t *api.Task
-			for _, t = range taskGroup {
-				if _, ok := nd.ActiveTasksCountByService[t.ServiceID]; ok {
-					// a mapping from image-based service to nodeslot counting
-					// use service-node mapping at this time
-					if _, ok := s.serviceReplicas[t.ServiceID]; !ok {
-						s.serviceReplicas[t.ServiceID] = make(map[string]int)
-					}
-					s.serviceReplicas[t.ServiceID][nd.ID] = 1
-				}
-				break
-			}
-		}
-	}
-
-	for serviceID := range s.toAllocReplicas {
-		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
-			s.toAllocReplicas[serviceID] -= len(servReplica)
-		}
-		if s.toAllocReplicas[serviceID] < 0 {
-			log.G(ctx).Infof("%v more replica than needed for service %v", -s.toAllocReplicas[serviceID], serviceID)
-			s.toAllocReplicas[serviceID] = 0
-		}
-	}
-
-	//specs := make(map[string]api.TaskSpec)
-	taskScheduled := 0
-
-	var coherenceMapping *map[string]map[string]int
-	switch SupportFlag {
-	case RootfsBased:
-		coherenceMapping = &s.rootfsMapping
-	case ImageBased:
-		coherenceMapping = &s.imageMapping
-	case ServiceBased:
-		coherenceMapping = &s.serviceReplicas
-	}
-	drfHeap := s.initDrfMinHeap(&s.toAllocReplicas, &s.factorKeys, coherenceMapping)
-
-	for {
-		// init drf heap
-		drfHeap.nodes = make([]drfNode, 0)
-		for servSpec, taskGroup := range taskGroups {
-			//filter tasks
-			var t *api.Task
-			for _, t = range taskGroup {
-				//specs[servSpec] = t.Spec
-				break
-			}
-
-			if t == nil {
-				log.G(ctx).Warnf("no task for taskGroup %v", servSpec)
-				continue
-			}
-
-			s.pipeline.SetTask(t)
-
-			// filter nodes
-			for _, node := range nodes {
-				if s.pipeline.Process(&node) {
-					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, t.ServiceID, taskGroup)...)
-				}
-			}
-		}
-
-		if len(tasks) == 0 || drfHeap.Len() == 0 {
-			return taskScheduled
-		}
-
-		// get drf result and apply it
-		heap.Init(drfHeap)
-		fittest, ok := heap.Pop(drfHeap).(drfNode)
-		if !ok {
-			log.G(ctx).Errorf("drf heap failed")
-			break
-		}
-
-		nodeID, taskID := fittest.nodeID, fittest.taskID
-		// Skip tasks which were already scheduled because they ended
-		// up in two groups at once.
-		if _, exists := schedulingDecisions[taskID]; !exists {
-			old := tasks[taskID]
-			// update task and node
-			log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
-			newT := *old
-			newT.NodeID = nodeID
-			newT.Status = api.TaskStatus{
-				State:     api.TaskStateAssigned,
-				Timestamp: ptypes.MustTimestampProto(time.Now()),
-				Message:   "scheduler assigned task to node",
-			}
-			s.allTasks[taskID] = &newT
-
-			nodeInfo, err := s.nodeSet.nodeInfo(nodeID)
-			if err == nil && nodeInfo.addTask(&newT) {
-				s.nodeSet.updateNode(nodeInfo)
-				nodes[nodeID] = nodeInfo
-			}
-
-			s.updateRunningServReplicas(nodeInfo, old)
-
-			schedulingDecisions[taskID] = schedulingDecision{old: old, new: &newT}
-			taskScheduled++
-		}
-
-		// remove scheduled task from tasks to rebuild the heap for next iteration
-		delete(tasks, taskID)
-		oldKey := taskGroupKeys[taskID]
-		oldGroup, ok := taskGroups[oldKey]
-		if ok {
-			if len(oldGroup) == 0 {
-				delete(taskGroups, oldKey)
-			} else {
-				delete(oldGroup, taskID)
-			}
-		}
-	}
-
-	return taskScheduled
 }
 
 func (s *Scheduler) applySchedulingDecisions(ctx context.Context, schedulingDecisions map[string]schedulingDecision) (successful, failed []schedulingDecision) {
@@ -941,79 +883,6 @@ func (s *Scheduler) scheduleTaskGroup(ctx context.Context, taskGroup map[string]
 	}
 }
 
-func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *map[string][]string, coherenceMapping *map[string]map[string]int) *nodeDRFHeap {
-	drfHeap := &nodeDRFHeap{}
-	drfHeap.toAllocReplicas = toAllocReplicas
-	drfHeap.factorKeyMapping = factorKeys
-	drfHeap.coherenceMapping = coherenceMapping
-	drfHeap.drfLess = func(ni, nj *drfNode, h *nodeDRFHeap) bool {
-		if h.toAllocReplicas != nil {
-			toReplicas := *h.toAllocReplicas
-			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
-				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
-			}
-		}
-
-		if h.coherenceMapping != nil && h.factorKeyMapping != nil {
-			coherencesMapping := *h.coherenceMapping
-			factorKeysMapping := *h.factorKeyMapping
-			//coherenceI, coherenceJ := 0,0
-			factorKeysI, okI := factorKeysMapping[ni.key]
-			factorKeysJ, okJ := factorKeysMapping[nj.key]
-			getCoherenceFactor := func(keys []string, nodeId string) int {
-				final := 0
-				for _, key := range keys {
-					if factor, ok := coherencesMapping[key]; ok {
-						if value, ok := factor[nodeId]; ok && value > 0 {
-							final += value
-						} else {
-							break
-						}
-					} else {
-						break
-					}
-				}
-				return final
-			}
-			if okI && okJ {
-				coherenceI, coherenceJ := getCoherenceFactor(factorKeysI, ni.nodeID), getCoherenceFactor(factorKeysJ, nj.nodeID)
-				if coherenceI != coherenceJ {
-					return coherenceI > coherenceJ
-				}
-			} else if okI {
-				return true
-			} else if okJ {
-				return false
-			}
-		}
-
-		// drf compare
-		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
-		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
-		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
-		if cmp < 0 {
-			return true
-		} else if cmp > 0 {
-			return false
-		}
-
-		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
-		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
-		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
-		if typeI == typeJ {
-			if leftI == leftJ {
-				return strings.Compare(ni.nodeID, nj.nodeID) < 0
-			}
-			return leftI < leftJ
-		} else if typeI == cpu {
-			return true
-		} else {
-			return false
-		}
-	}
-	return drfHeap
-}
-
 func (s *Scheduler) scheduleNTasksOnSubtree(ctx context.Context, n int, taskGroup map[string]*api.Task, tree *decisionTree, schedulingDecisions map[string]schedulingDecision, nodeLess func(a *NodeInfo, b *NodeInfo) bool) int {
 	if tree.next == nil {
 		nodes := tree.orderedNodes(s.pipeline.Process, nodeLess)
@@ -1168,4 +1037,316 @@ func (s *Scheduler) buildNodeSet(tx store.ReadTx, tasksByNode map[string]map[str
 	}
 
 	return nil
+}
+
+func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *map[string][]string, coherenceMapping *map[string]map[string]int) *nodeDRFHeap {
+	drfHeap := &nodeDRFHeap{}
+	drfHeap.toAllocReplicas = toAllocReplicas
+	drfHeap.factorKeyMapping = factorKeys
+	drfHeap.coherenceMapping = coherenceMapping
+	drfHeap.drfLess = func(ni, nj drfNode, h *nodeDRFHeap) bool {
+		if h.toAllocReplicas != nil {
+			toReplicas := *h.toAllocReplicas
+			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
+				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
+			}
+		}
+
+		if h.coherenceMapping != nil && h.factorKeyMapping != nil {
+			coherencesMapping := *h.coherenceMapping
+			factorKeysMapping := *h.factorKeyMapping
+			//coherenceI, coherenceJ := 0,0
+			factorKeysI, okI := factorKeysMapping[ni.key]
+			factorKeysJ, okJ := factorKeysMapping[nj.key]
+			getCoherenceFactor := func(keys []string, nodeId string) int {
+				final := 0
+				for _, key := range keys {
+					if factor, ok := coherencesMapping[key]; ok {
+						if value, ok := factor[nodeId]; ok && value > 0 {
+							final += value
+						} else {
+							break
+						}
+					} else {
+						break
+					}
+				}
+				return final
+			}
+			if okI && okJ {
+				coherenceI, coherenceJ := getCoherenceFactor(factorKeysI, ni.nodeID), getCoherenceFactor(factorKeysJ, nj.nodeID)
+				if coherenceI != coherenceJ {
+					return coherenceI > coherenceJ
+				}
+			} else if okI {
+				return true
+			} else if okJ {
+				return false
+			}
+		}
+
+		// drf compare
+		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
+		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
+		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
+		if cmp < 0 {
+			return true
+		} else if cmp > 0 {
+			return false
+		}
+
+		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
+		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
+		if typeI == typeJ {
+			if leftI == leftJ {
+				return strings.Compare(ni.nodeID, nj.nodeID) < 0
+			}
+			return leftI < leftJ
+		} else if typeI == cpu {
+			return true
+		} else {
+			return false
+		}
+	}
+	return drfHeap
+}
+
+// serviceReplicas is used for image-based service, indicating number of image replica needed to be scheduled
+func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[string]map[string]*api.Task, tasks map[string]*api.Task, taskGroupKeys map[string]string, schedulingDecisions map[string]schedulingDecision) int {
+	//tasksByImage := make([]*api.Task, 0)
+	// cause drf change resource usage during calculation, use nodes to copy the nodeset.nodes
+	nodes := make(map[string]NodeInfo)
+	for _, nd := range s.nodeSet.nodes {
+		nodes[nd.ID] = nd
+		for _, taskGroup := range taskGroups {
+			var t *api.Task
+			for _, t = range taskGroup {
+				if count, ok := nd.ActiveTasksCountByService[t.ServiceID]; ok {
+					// a mapping from image-based service to nodeslot counting
+					// use service-node mapping at this time
+					if _, ok := s.serviceReplicas[t.ServiceID]; !ok {
+						s.serviceReplicas[t.ServiceID] = make(map[string]int)
+					}
+					s.serviceReplicas[t.ServiceID][nd.ID] = count
+				}
+				break
+			}
+		}
+	}
+
+	for serviceID := range s.toAllocReplicas {
+		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
+			s.toAllocReplicas[serviceID] -= len(servReplica)
+		}
+		if s.toAllocReplicas[serviceID] < 0 {
+			log.G(ctx).Infof("%v more replica than needed for service %v", -s.toAllocReplicas[serviceID], serviceID)
+			s.toAllocReplicas[serviceID] = 0
+		}
+	}
+
+	//specs := make(map[string]api.TaskSpec)
+	taskScheduled := 0
+
+	var coherenceMapping *map[string]map[string]int
+	switch SupportFlag {
+	case RootfsBased:
+		coherenceMapping = &s.rootfsMapping
+	case ImageBased:
+		coherenceMapping = &s.imageMapping
+	case ServiceBased:
+		coherenceMapping = &s.serviceReplicas
+	}
+	drfHeap := s.initDrfMinHeap(&s.toAllocReplicas, &s.factorKeys, coherenceMapping)
+
+	for {
+		// init drf heap
+		drfHeap.nodes = make([]drfNode, 0)
+		for servSpec, taskGroup := range taskGroups {
+			//filter tasks
+			var t *api.Task
+			for _, t = range taskGroup {
+				//specs[servSpec] = t.Spec
+				break
+			}
+
+			if t == nil {
+				log.G(ctx).Warnf("no task for taskGroup %v", servSpec)
+				continue
+			}
+
+			s.pipeline.SetTask(t)
+
+			// filter nodes
+			for _, node := range nodes {
+				if s.pipeline.Process(&node) {
+					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, t.ServiceID, taskGroup)...)
+				}
+			}
+		}
+
+		if len(tasks) == 0 || drfHeap.Len() == 0 {
+			return taskScheduled
+		}
+
+		// get drf result and apply it
+		fittest := drfHeap.top()
+
+		nodeID, taskID := fittest.nodeID, fittest.taskID
+		// Skip tasks which were already scheduled because they ended
+		// up in two groups at once.
+		if _, exists := schedulingDecisions[taskID]; !exists {
+			old := tasks[taskID]
+			// update task and node
+			log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
+			newT := *old
+			newT.NodeID = nodeID
+			newT.Status = api.TaskStatus{
+				State:     api.TaskStateAssigned,
+				Timestamp: ptypes.MustTimestampProto(time.Now()),
+				Message:   "scheduler assigned task to node",
+			}
+			s.allTasks[taskID] = &newT
+
+			nodeInfo, err := s.nodeSet.nodeInfo(nodeID)
+			if err == nil && nodeInfo.addTask(&newT) {
+				s.nodeSet.updateNode(nodeInfo)
+				nodes[nodeID] = nodeInfo
+			}
+
+			s.updateRunningServReplicas(nodeInfo, old)
+
+			schedulingDecisions[taskID] = schedulingDecision{old: old, new: &newT}
+			taskScheduled++
+		}
+
+		// remove scheduled task from tasks to rebuild the heap for next iteration
+		delete(tasks, taskID)
+		oldKey := taskGroupKeys[taskID]
+		oldGroup, ok := taskGroups[oldKey]
+		if ok {
+			if len(oldGroup) == 0 {
+				delete(taskGroups, oldKey)
+			} else {
+				delete(oldGroup, taskID)
+			}
+		}
+	}
+}
+
+// scaleDown try to scale down related service to required instances without changing replica distribution
+// Later we should add replica reshuffle mechanism which reduces service redundant replicas
+func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required uint64) (slots map[uint64]struct{}) {
+	replicaNodes := s.serviceReplicas[serviceID]
+	slotsMap := make(map[uint64]struct{})
+	scaleCandidates := make(map[string]*api.Task)
+	instances := 0
+	removable := 0
+	instancesNodes := make(map[string]int)
+	scaleNodes := make(map[string]NodeInfo)
+	for nodeID := range replicaNodes {
+		instances += replicaNodes[nodeID]
+		if replicaNodes[nodeID] > 1 {
+			if node, err := s.nodeSet.nodeInfo(nodeID); err != nil {
+				scaleNodes[nodeID] = node
+				instancesNodes[nodeID] = replicaNodes[nodeID]
+				for taskID, task := range node.Tasks {
+					if task.ServiceID == serviceID {
+						if _, ok := slotsMap[task.Slot]; !ok {
+							slotsMap[task.Slot] = struct{}{}
+							scaleCandidates[taskID] = task
+						}
+					}
+				}
+			}
+			removable++
+		}
+	}
+	if len(scaleNodes) == 0 {
+		return nil
+	}
+	removable = len(scaleCandidates) - removable
+	toScale := instances - int(required)
+	if toScale < 0 {
+		return nil
+	}
+	if toScale > removable {
+		toScale = removable
+	}
+
+	removeSlot := make(map[uint64]struct{})
+	drfHeap := s.initDrfMaxHeap()
+	for {
+		if toScale == 0 {
+			break
+		}
+		// init drf heap
+		drfHeap.nodes = make([]drfNode, 0)
+		for _, task := range scaleCandidates {
+			s.pipeline.SetTask(task)
+			// filter nodes
+			for _, node := range scaleNodes {
+				if s.pipeline.Process(&node) {
+					drfHeap.nodes = append(drfHeap.nodes, *newMaxDRFNode(node, task.ServiceID, task))
+				}
+			}
+		}
+
+		if drfHeap.Len() == 0 {
+			break
+		}
+
+		// get drf result and apply it
+		fittest := drfHeap.top()
+		toScale--
+
+		nodeID, taskID := fittest.nodeID, fittest.taskID
+		slot := scaleCandidates[taskID].Slot
+		removeSlot[slot] = struct{}{}
+		delete(slotsMap, slot)
+		delete(scaleCandidates, taskID)
+		instancesNodes[nodeID]--
+		if instancesNodes[nodeID] == 1 {
+			delete(instancesNodes, nodeID)
+			delete(scaleNodes, nodeID)
+		}
+	}
+
+	if len(removeSlot) == 0 {
+		return nil
+	}
+	for slot := range removeSlot {
+		slots[slot] = struct{}{}
+	}
+	return
+}
+
+func (s *Scheduler) initDrfMaxHeap() *nodeDRFHeap {
+	drfHeap := &nodeDRFHeap{}
+	drfHeap.drfLess = func(nj, ni drfNode, h *nodeDRFHeap) bool {
+		// drf compare
+		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
+		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
+		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
+		if cmp < 0 {
+			return true
+		} else if cmp > 0 {
+			return false
+		}
+
+		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
+		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
+		if typeI == typeJ {
+			if leftI == leftJ {
+				return strings.Compare(ni.nodeID, nj.nodeID) < 0
+			}
+			return leftI < leftJ
+		} else if typeI == cpu {
+			return true
+		} else {
+			return false
+		}
+	}
+	return drfHeap
 }

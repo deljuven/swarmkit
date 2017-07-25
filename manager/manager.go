@@ -38,7 +38,7 @@ import (
 	"github.com/docker/swarmkit/remotes"
 	"github.com/docker/swarmkit/xnet"
 	gogotypes "github.com/gogo/protobuf/types"
-	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	"github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -153,6 +153,9 @@ type Manager struct {
 
 	imageQueryReq  chan *scheduler.RootfsQueryReq
 	imageQueryResp chan *scheduler.RootfsQueryResp
+
+	scaleDownReq  chan *scheduler.ScaleDownReq
+	scaleDownResp chan *scheduler.ScaleDownResp
 }
 
 type closeOnceListener struct {
@@ -234,6 +237,8 @@ func New(config *Config) (*Manager, error) {
 		controlListener: make(chan net.Listener, 1),
 		errServe:        make(chan error, 2),
 		syncChan:        make(chan *scheduler.SyncMessage),
+		scaleDownReq:    make(chan *scheduler.ScaleDownReq),
+		scaleDownResp:   make(chan *scheduler.ScaleDownResp),
 	}
 
 	if config.ControlAPI != "" {
@@ -634,6 +639,8 @@ func (m *Manager) Stop(ctx context.Context, clearData bool) {
 	}
 
 	close(m.syncChan)
+	close(m.scaleDownReq)
+	close(m.scaleDownResp)
 	log.G(ctx).Info("Manager shut down")
 	// mutex is released and Run can return now
 }
@@ -930,6 +937,8 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 
 	m.replicatedOrchestrator.ImageQueryPrepare(m.imageQueryReq)
 	m.scheduler.ImageQueryPrepare(m.imageQueryReq, m.imageQueryResp)
+	m.replicatedOrchestrator.InitScaleChan(m.scaleDownReq, m.scaleDownResp)
+	m.scheduler.InitScaleChan(m.scaleDownReq, m.scaleDownResp)
 
 	// TODO(stevvooe): Allocate a context that can be used to
 	// shutdown underlying manager processes when leadership is

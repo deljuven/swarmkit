@@ -175,6 +175,9 @@ func getWeightedPeers(cluster Cluster) []*api.WeightedPeer {
 
 // InitSyncChan inits the sync chan for sync rootfs modifications, shared with scheduler
 func (d *Dispatcher) InitSyncChan(syncChan chan *scheduler.SyncMessage) {
+	if scheduler.SupportFlag == scheduler.ServiceBased {
+		return
+	}
 	d.syncChan = syncChan
 }
 

@@ -143,7 +143,7 @@ func newDRFNodes(node NodeInfo, serviceID string, tasks map[string]*api.Task) []
 	return nodes
 }
 
-// build a min heap for drf algorithm, which is based on max-min fairness
+// build a min heap for drf algorithm, which is based on max-top fairness
 type nodeDRFHeap struct {
 	nodes           []drfNode
 	toAllocReplicas *map[string]int
@@ -151,7 +151,7 @@ type nodeDRFHeap struct {
 	coherenceMapping *map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
 	factorKeyMapping *map[string][]string
-	drfLess          func(*drfNode, *drfNode, *nodeDRFHeap) bool
+	drfLess          func(drfNode, drfNode, *nodeDRFHeap) bool
 }
 
 func (h nodeDRFHeap) Len() int {
@@ -164,7 +164,7 @@ func (h nodeDRFHeap) Swap(i, j int) {
 
 func (h nodeDRFHeap) Less(i, j int) bool {
 	// reversed to make a drf-heap
-	return h.drfLess(&h.nodes[i], &h.nodes[j], &h)
+	return h.drfLess(h.nodes[i], h.nodes[j], &h)
 }
 
 func (h *nodeDRFHeap) Push(x interface{}) {
@@ -179,13 +179,13 @@ func (h *nodeDRFHeap) Pop() interface{} {
 }
 
 // Prepare used for initiation in test
-func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstraints func(*NodeInfo) bool) {
+func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []*api.Task, meetsConstraints func(*NodeInfo) bool) {
 	//size := len(tasks)
 	h.nodes = make([]drfNode, 0)
 	for _, node := range nodes {
 		for _, task := range tasks {
 			if meetsConstraints(&node) {
-				h.nodes = append(h.nodes, *newDRFNode(node, task.ServiceID, &task))
+				h.nodes = append(h.nodes, *newDRFNode(node, task.ServiceID, task))
 			}
 		}
 	}
@@ -196,4 +196,24 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []api.Task, meetsConstrain
 	serviceTmp := make(map[string][]string)
 	h.factorKeyMapping = &serviceTmp
 
+}
+
+func (h *nodeDRFHeap) bottom() drfNode {
+	max := h.nodes[0]
+	for _, node := range h.nodes {
+		if h.drfLess(max, node, h) {
+			max = node
+		}
+	}
+	return max
+}
+
+func (h *nodeDRFHeap) top() drfNode {
+	min := h.nodes[0]
+	for _, node := range h.nodes {
+		if h.drfLess(node, min, h) {
+			min = node
+		}
+	}
+	return min
 }
