@@ -3,7 +3,6 @@ package scheduler
 import (
 	"testing"
 
-	"container/heap"
 	"fmt"
 	"github.com/docker/swarmkit/api"
 	"github.com/stretchr/testify/assert"
@@ -86,9 +85,35 @@ func TestDRFHeap(t *testing.T) {
 		return true
 	})
 
-	heap.Init(&drfHeap)
+	//heap.Init(&drfHeap)
+	//
+	//finest := heap.Pop(&drfHeap)
+	drfHeap.drfLess = func(ni, nj drfNode, h *nodeDRFHeap) bool {
+		// drf compare
+		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
+		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
+		cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
+		if cmp < 0 {
+			return true
+		} else if cmp > 0 {
+			return false
+		}
 
-	finest := heap.Pop(&drfHeap)
+		leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+		leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
+		// drf resource with same type, choose the least left amount; otherwise, choose cpu type
+		if typeI == typeJ {
+			if leftI == leftJ {
+				return strings.Compare(ni.nodeID, nj.nodeID) < 0
+			}
+			return leftI < leftJ
+		} else if typeI == cpu {
+			return true
+		} else {
+			return false
+		}
+	}
+	finest := drfHeap.top()
 
 	expected := newDRFNode(nodeInfo1, task2.ServiceID, task2)
 	assert.Equal(t, *expected, finest, "should be equal")
