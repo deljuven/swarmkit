@@ -270,6 +270,10 @@ func (r *Orchestrator) IsRelatedService(service *api.Service) bool {
 
 // IsRelatedService returns true if the service should be governed by this orchestrator
 func (r *Orchestrator) getScaleDownPolicy(ctx context.Context, service *api.Service, required uint64) {
+	if r.scaleDownReq == nil {
+		log.G(ctx).Info("(*Orchestrator).getScaleDownPolicy is no longer running for chan closed")
+		return
+	}
 	select {
 	case r.scaleDownReq <- &scheduler.ScaleDownReq{
 		Service:  service,
@@ -284,6 +288,10 @@ func (r *Orchestrator) getScaleDownPolicy(ctx context.Context, service *api.Serv
 // HandleScaleDownResp handles scale down policy calculated by scheduler
 func (r *Orchestrator) HandleScaleDownResp(ctx context.Context) {
 	for {
+		if r.scaleDownResp == nil {
+			log.G(ctx).Info("(*Orchestrator).HandleScaleDownResp is no longer running for chan closed")
+			return
+		}
 		select {
 		case resp, ok := <-r.scaleDownResp:
 			if !ok {

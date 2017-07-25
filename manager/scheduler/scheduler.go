@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"math/big"
 	"strings"
 	"time"
@@ -218,10 +219,14 @@ func (s *Scheduler) syncRootfs(ctx context.Context) {
 		return
 	}
 	for {
+		if s.syncChan == nil {
+			log.G(ctx).Info("(*Scheduler).syncRootfs failed for chan closed")
+			return
+		}
 		select {
 		case msg := <-s.syncChan:
 			if msg == nil {
-				log.G(ctx).Error("(*Scheduler).syncRootfs read nil while synchronizing from dispatcher")
+				log.G(ctx).Debug("(*Scheduler).syncRootfs read nil while synchronizing from dispatcher")
 				return
 			}
 			syncMsg := *msg
@@ -246,6 +251,9 @@ func (s *Scheduler) syncRootfs(ctx context.Context) {
 
 // SyncRootFSMapping is used to query registry for specified image's rootfs
 func (s *Scheduler) SyncRootFSMapping(ctx context.Context, image string, encodedAuth string) error {
+	if s.imageQueryReq == nil {
+		return errors.New("(*Scheduler).SyncRootFSMapping not ready for chan is closed")
+	}
 	select {
 	case s.imageQueryReq <- &RootfsQueryReq{
 		Image:       image,
@@ -259,6 +267,10 @@ func (s *Scheduler) SyncRootFSMapping(ctx context.Context, image string, encoded
 
 func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 	for {
+		if s.imageQueryResp == nil {
+			log.G(ctx).Error("(*Scheduler).handleSyncRootFSMapping not ready for chan is not inited")
+			return
+		}
 		select {
 		case resp, ok := <-s.imageQueryResp:
 			if !ok {
@@ -279,6 +291,10 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 
 func (s *Scheduler) handleScaleDown(ctx context.Context) {
 	for {
+		if s.scaleDownReq == nil {
+			log.G(ctx).Info("(*Scheduler).handleScaleDown is no longer running for chan closed")
+			return
+		}
 		select {
 		case req, ok := <-s.scaleDownReq:
 			if !ok {
@@ -288,6 +304,10 @@ func (s *Scheduler) handleScaleDown(ctx context.Context) {
 			service, required := req.Service, req.Required
 			slots := s.scaleDown(ctx, service.ID, required)
 			go func() {
+				if s.scaleDownResp == nil {
+					log.G(ctx).Info("(*Scheduler).handleScaleDown is no longer running for chan closed")
+					return
+				}
 				select {
 				case s.scaleDownResp <- &ScaleDownResp{
 					Service:  service,

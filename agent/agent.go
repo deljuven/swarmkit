@@ -83,6 +83,19 @@ func (a *Agent) ImageQueryPrepare(imageQueryReq chan *scheduler.RootfsQueryReq, 
 	a.imageQueryReq, a.imageQueryResp = imageQueryReq, imageQueryResp
 }
 
+// CloseImageQuery remove image query chan when agent stoped
+func (a *Agent) CloseImageQuery() {
+	if scheduler.SupportFlag != scheduler.RootfsBased {
+		return
+	}
+	if a.imageQueryReq != nil {
+		a.imageQueryReq = nil
+	}
+	if a.imageQueryResp != nil {
+		a.imageQueryResp = nil
+	}
+}
+
 // Start begins execution of the agent in the provided context, if not already
 // started.
 //
@@ -230,7 +243,7 @@ func (a *Agent) run(ctx context.Context) {
 
 	a.worker.Listen(ctx, reporter)
 
-	go a.HandleImageQuery(ctx)
+	defer a.CloseImageQuery()
 
 	for {
 		select {
@@ -605,6 +618,10 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 	}
 
 	for {
+		if a.imageQueryReq == nil {
+			log.G(ctx).Info("(*Agent).HandleImageQuery is no longer running for agent closed")
+			return
+		}
 		select {
 		case req, ok := <-a.imageQueryReq:
 			if !ok {
@@ -618,6 +635,10 @@ func (a *Agent) HandleImageQuery(ctx context.Context) {
 				continue
 			}
 			go func() {
+				if a.imageQueryResp == nil {
+					log.G(ctx).Info("(*Agent).HandleImageQuery is no longer running for agent closed")
+					return
+				}
 				select {
 				case a.imageQueryResp <- &scheduler.RootfsQueryResp{
 					Image:  img,

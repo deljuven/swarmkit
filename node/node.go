@@ -352,7 +352,7 @@ func (n *Node) run(ctx context.Context) (err error) {
 			select {
 			case <-managerReady:
 				n.agent.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
-				n.manager.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
+				go n.agent.HandleImageQuery(ctx)
 			case <-workerRole:
 			}
 			waitRoleCancel()
@@ -389,6 +389,8 @@ func (n *Node) Stop(ctx context.Context) error {
 	n.stopOnce.Do(func() {
 		close(n.stopped)
 	})
+
+	n.agent.ImageQueryPrepare(nil, nil)
 
 	close(n.imageQueryReq)
 	close(n.imageQueryResp)
@@ -756,6 +758,7 @@ func (n *Node) runManager(ctx context.Context, securityConfig *ca.SecurityConfig
 	done := make(chan struct{})
 	var runErr error
 	go func(logger *logrus.Entry) {
+		m.ImageQueryPrepare(n.imageQueryReq, n.imageQueryResp)
 		if err := m.Run(log.WithLogger(context.Background(), logger)); err != nil {
 			runErr = err
 		}
@@ -765,6 +768,7 @@ func (n *Node) runManager(ctx context.Context, securityConfig *ca.SecurityConfig
 	var clearData bool
 	defer func() {
 		n.Lock()
+		n.manager.ImageQueryPrepare(nil, nil)
 		n.manager = nil
 		n.Unlock()
 		m.Stop(ctx, clearData)

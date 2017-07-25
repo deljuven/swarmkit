@@ -236,9 +236,6 @@ func New(config *Config) (*Manager, error) {
 		remoteListener:  make(chan net.Listener, 1),
 		controlListener: make(chan net.Listener, 1),
 		errServe:        make(chan error, 2),
-		syncChan:        make(chan *scheduler.SyncMessage),
-		scaleDownReq:    make(chan *scheduler.ScaleDownReq),
-		scaleDownResp:   make(chan *scheduler.ScaleDownResp),
 	}
 
 	if config.ControlAPI != "" {
@@ -471,16 +468,16 @@ func (m *Manager) Run(parent context.Context) error {
 
 	// Everything registered on m.server should be an authenticated
 	// wrapper, or a proxy wrapping an authenticated wrapper!
-	api.RegisterControlServer(m.server, authenticatedControlAPI)
-	api.RegisterLogsServer(m.server, authenticatedLogsServerAPI)
-	api.RegisterHealthServer(m.server, authenticatedHealthAPI)
-	api.RegisterDispatcherServer(m.server, proxyDispatcherAPI)
 	api.RegisterCAServer(m.server, proxyCAAPI)
 	api.RegisterNodeCAServer(m.server, proxyNodeCAAPI)
-	api.RegisterResourceAllocatorServer(m.server, proxyResourceAPI)
-	api.RegisterLogBrokerServer(m.server, proxyLogBrokerAPI)
 	api.RegisterRaftServer(m.server, authenticatedRaftAPI)
+	api.RegisterHealthServer(m.server, authenticatedHealthAPI)
 	api.RegisterRaftMembershipServer(m.server, proxyRaftMembershipAPI)
+	api.RegisterControlServer(m.server, authenticatedControlAPI)
+	api.RegisterLogsServer(m.server, authenticatedLogsServerAPI)
+	api.RegisterLogBrokerServer(m.server, proxyLogBrokerAPI)
+	api.RegisterResourceAllocatorServer(m.server, proxyResourceAPI)
+	api.RegisterDispatcherServer(m.server, proxyDispatcherAPI)
 	grpc_prometheus.Register(m.server)
 
 	api.RegisterControlServer(m.localserver, localProxyControlAPI)
@@ -592,6 +589,9 @@ func (m *Manager) Stop(ctx context.Context, clearData bool) {
 	m.dispatcher.Stop()
 	m.logbroker.Stop()
 	m.caserver.Stop()
+
+	m.replicatedOrchestrator.ImageQueryPrepare(nil)
+	m.scheduler.ImageQueryPrepare(nil, nil)
 
 	if m.allocator != nil {
 		m.allocator.Stop()
@@ -932,11 +932,16 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 	m.keyManager = keymanager.New(s, keymanager.DefaultConfig())
 	m.roleManager = newRoleManager(s, m.raftNode)
 
+	m.replicatedOrchestrator.ImageQueryPrepare(m.imageQueryReq)
+	m.scheduler.ImageQueryPrepare(m.imageQueryReq, m.imageQueryResp)
+
+	m.syncChan = make(chan *scheduler.SyncMessage)
+	m.scaleDownReq = make(chan *scheduler.ScaleDownReq)
+	m.scaleDownResp = make(chan *scheduler.ScaleDownResp)
+
 	m.scheduler.InitSyncChan(m.syncChan)
 	m.dispatcher.InitSyncChan(m.syncChan)
 
-	m.replicatedOrchestrator.ImageQueryPrepare(m.imageQueryReq)
-	m.scheduler.ImageQueryPrepare(m.imageQueryReq, m.imageQueryResp)
 	m.replicatedOrchestrator.InitScaleChan(m.scaleDownReq, m.scaleDownResp)
 	m.scheduler.InitScaleChan(m.scaleDownReq, m.scaleDownResp)
 
@@ -1021,6 +1026,12 @@ func (m *Manager) becomeLeader(ctx context.Context) {
 
 // becomeFollower shuts down the subsystems that are only run by the leader.
 func (m *Manager) becomeFollower() {
+	m.scheduler.InitSyncChan(nil)
+	m.dispatcher.InitSyncChan(nil)
+
+	m.scheduler.InitScaleChan(nil, nil)
+	m.replicatedOrchestrator.InitScaleChan(nil, nil)
+
 	m.dispatcher.Stop()
 	m.logbroker.Stop()
 	m.caserver.Stop()
@@ -1053,10 +1064,10 @@ func (m *Manager) becomeFollower() {
 		m.keyManager = nil
 	}
 
-	m.scheduler.InitSyncChan(nil)
-	m.dispatcher.InitSyncChan(nil)
+	close(m.syncChan)
+	close(m.scaleDownReq)
+	close(m.scaleDownResp)
 
-	m.scheduler.ImageQueryPrepare(nil, nil)
 }
 
 // defaultClusterObject creates a default cluster.
