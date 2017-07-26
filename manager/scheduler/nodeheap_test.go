@@ -3,6 +3,7 @@ package scheduler
 import (
 	"testing"
 
+	"container/heap"
 	"fmt"
 	"github.com/docker/swarmkit/api"
 	"github.com/stretchr/testify/assert"
@@ -120,8 +121,8 @@ func TestDRFHeap(t *testing.T) {
 }
 
 func TestHugeDRFHeap(t *testing.T) {
-	nodeSize := 30
-	taskSize := 300
+	nodeSize := 100
+	taskSize := 1000
 	nodes := make([]*api.Node, nodeSize)
 	nodeInfos := make(map[string]*NodeInfo)
 	for index := range nodes {
@@ -194,16 +195,26 @@ func TestHugeDRFHeap(t *testing.T) {
 	for {
 		pre := time.Now()
 		drfHeap.nodes = make([]drfNode, 0)
+		var min *drfNode
 		for _, task := range tasks {
 			// filter nodes
 			for _, node := range nodeInfos {
 				if meets(node, task) {
-					drfHeap.nodes = append(drfHeap.nodes, *newDRFNode(*node, task.ServiceID, task))
+					n := newDRFNode(*node, task.ServiceID, task)
+					if min == nil {
+						min = n
+					} else if drfHeap.drfLess(*min, *n, drfHeap) {
+						min = n
+					}
+					//drfHeap.nodes = append(drfHeap.nodes, *newDRFNode(*node, task.ServiceID, task))
 				}
+			}
+			if min != nil {
+				break
 			}
 		}
 
-		if drfHeap.Len() == 0 {
+		if min == nil || len(tasks) == 0 {
 			fin := time.Now()
 			t.Logf("current is %v, time passed %v. counts %v, max inits costs %v, min inits costs %v", fin, fin.Sub(start), count, maxInit, minInit)
 			return
@@ -219,14 +230,119 @@ func TestHugeDRFHeap(t *testing.T) {
 			minInit = tmp
 		}
 		//pop, ok := heap.Pop(drfHeap).(drfNode)
-		pop := drfHeap.top()
+		//pop := drfHeap.top()
 		count++
 		//t.Logf("consuming node %v with task %v", pop.nodeID, pop.taskID)
-		reserved := tasks[pop.taskID].Spec.Resources.Reservations
-		nodeInfos[pop.nodeID].AvailableResources.NanoCPUs -= reserved.NanoCPUs
-		nodeInfos[pop.nodeID].AvailableResources.MemoryBytes -= reserved.MemoryBytes
+		reserved := tasks[min.taskID].Spec.Resources.Reservations
+		nodeInfos[min.nodeID].AvailableResources.NanoCPUs -= reserved.NanoCPUs
+		nodeInfos[min.nodeID].AvailableResources.MemoryBytes -= reserved.MemoryBytes
 		//t.Logf("after consuming, resource are %v", nodeInfos[pop.nodeID].AvailableResources)
-		delete(tasks, pop.taskID)
+		delete(tasks, min.taskID)
 	}
+
+}
+
+func TestHugeMaxHeap(t *testing.T) {
+	nodeSize := 100
+	taskSize := 1000
+	nodes := make([]*api.Node, nodeSize)
+	nodeInfos := make(map[string]*NodeInfo)
+	serviceID := "service1"
+	for index := range nodes {
+		nodes[index] = &api.Node{ID: fmt.Sprintf("node%v", index)}
+		n := newNodeInfo(nodes[index], nil, api.Resources{
+			NanoCPUs:    8e9,
+			MemoryBytes: 4e7,
+		})
+		nodeInfos[nodes[index].ID] = &n
+	}
+
+	tasks := make(map[string]*api.Task)
+	var task *api.Task
+	for index := 0; index < taskSize; index++ {
+		id := fmt.Sprintf("task%v", index)
+		tasks[id] = &api.Task{
+			ID:        id,
+			ServiceID: serviceID,
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{
+						Image: "alpine",
+					},
+				},
+				Resources: &api.ResourceRequirements{
+					Reservations: &api.Resources{
+						NanoCPUs:    4e8,
+						MemoryBytes: 2e6,
+					},
+				},
+			},
+		}
+		if task == nil {
+			task = tasks[id]
+		}
+	}
+
+	meets := func(node *NodeInfo, task *api.Task) bool {
+		available, reserved := node.AvailableResources, task.Spec.Resources.Reservations
+		if available.NanoCPUs < reserved.NanoCPUs || available.MemoryBytes < reserved.MemoryBytes {
+			return false
+		}
+		return true
+	}
+
+	now := time.Now()
+	nodeHeap := &nodeMaxHeap{}
+	nodeHeap.lessFunc = func(a *NodeInfo, b *NodeInfo) bool {
+		// If either node has at least maxFailures recent failures,
+		// that's the deciding factor.
+		// If either node has at least maxFailures recent failures,
+		// that's the deciding factor.
+		recentFailuresA := a.countRecentFailures(now, serviceID)
+		recentFailuresB := b.countRecentFailures(now, serviceID)
+
+		if recentFailuresA >= maxFailures || recentFailuresB >= maxFailures {
+			if recentFailuresA > recentFailuresB {
+				return false
+			}
+			if recentFailuresB > recentFailuresA {
+				return true
+			}
+		}
+
+		tasksByServiceA := a.ActiveTasksCountByService[serviceID]
+		tasksByServiceB := b.ActiveTasksCountByService[serviceID]
+
+		if tasksByServiceA < tasksByServiceB {
+			return true
+		}
+		if tasksByServiceA > tasksByServiceB {
+			return false
+		}
+
+		// Total number of tasks breaks ties.
+		return a.ActiveTasksCount < b.ActiveTasksCount
+	}
+	for _, node := range nodeInfos {
+		if meets(node, task) {
+			heap.Push(nodeHeap, *node)
+		}
+	}
+
+	count := 0
+	start := time.Now()
+	heap.Init(nodeHeap)
+	var maxInit, minInit time.Duration = 0, time.Minute
+	nodeIter := 0
+	for _, task := range tasks {
+		node := nodeHeap.nodes[nodeIter%nodeSize]
+		nodeIter++
+		node.addTask(task)
+		//t.Logf("consuming node %v with task %v", pop.nodeID, pop.taskID)
+		//t.Logf("after consuming, resource are %v", nodeInfos[pop.nodeID].AvailableResources)
+	}
+	fin := time.Now()
+	t.Logf("current is %v, time passed %v. counts %v, max inits costs %v, min inits costs %v", fin, fin.Sub(start), count, maxInit, minInit)
+	return
 
 }

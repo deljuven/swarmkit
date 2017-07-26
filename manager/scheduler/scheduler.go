@@ -1182,6 +1182,7 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 	for {
 		// init drf heap
 		drfHeap.nodes = make([]drfNode, 0)
+		var fittest *drfNode
 		for servSpec, taskGroup := range taskGroups {
 			//filter tasks
 			var t *api.Task
@@ -1200,17 +1201,21 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 			// filter nodes
 			for _, node := range nodes {
 				if s.pipeline.Process(&node) {
-					drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, t.ServiceID, taskGroup)...)
+					n := newDRFNode(node, t.ServiceID, t)
+					if fittest == nil || drfHeap.drfLess(*fittest, *n, drfHeap) {
+						fittest = n
+					}
+					//drfHeap.nodes = append(drfHeap.nodes, newDRFNodes(node, t.ServiceID, taskGroup)...)
 				}
 			}
 		}
 
-		if len(tasks) == 0 || drfHeap.Len() == 0 {
+		if len(tasks) == 0 || fittest == nil {
 			return taskScheduled
 		}
 
 		// get drf result and apply it
-		fittest := drfHeap.top()
+		//fittest := drfHeap.top()
 
 		nodeID, taskID := fittest.nodeID, fittest.taskID
 		// Skip tasks which were already scheduled because they ended
@@ -1320,21 +1325,29 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required ui
 		}
 		// init drf heap
 		drfHeap.nodes = make([]drfNode, 0)
+		var fittest *drfNode
 		for _, task := range scaleCandidates {
 			// filter nodes
 			for _, node := range scaleNodes {
 				if s.pipeline.Process(&node) {
-					drfHeap.nodes = append(drfHeap.nodes, *newMaxDRFNode(node, task.ServiceID, task))
+					n := newMaxDRFNode(node, task.ServiceID, task)
+					if fittest == nil || drfHeap.drfLess(*fittest, *n, drfHeap) {
+						fittest = n
+					}
+					//drfHeap.nodes = append(drfHeap.nodes, *newMaxDRFNode(node, task.ServiceID, task))
 				}
+			}
+			if fittest != nil {
+				break
 			}
 		}
 
-		if drfHeap.Len() == 0 {
+		if fittest == nil {
 			break
 		}
 
 		// get drf result and apply it
-		fittest := drfHeap.top()
+		//fittest := drfHeap.top()
 		toScale--
 
 		nodeID, taskID := fittest.nodeID, fittest.taskID
