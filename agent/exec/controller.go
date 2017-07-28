@@ -315,6 +315,7 @@ func Do(ctx context.Context, task *api.Task, ctlr Controller) (*api.TaskStatus, 
 			return fatal(err)
 		}
 
+		log.G(ctx).Infof("task %v for service %v started at %v", task.ID, task.ServiceID, time.Now())
 		return transition(api.TaskStateRunning, "started")
 	case api.TaskStateRunning:
 		if err := ctlr.Wait(ctx); err != nil {
@@ -332,10 +333,12 @@ func Do(ctx context.Context, task *api.Task, ctlr Controller) (*api.TaskStatus, 
 
 	switch status.State {
 	case api.TaskStateNew, api.TaskStatePending, api.TaskStateAssigned:
+		log.G(ctx).Infof("ALCLOG: task %v for service %v accepted at %v", task.ID, task.ServiceID, time.Now())
 		return transition(api.TaskStateAccepted, "accepted")
 	case api.TaskStateAccepted:
 		return transition(api.TaskStatePreparing, "preparing")
 	case api.TaskStateReady:
+		log.G(ctx).Infof("ALCLOG: task %v for service %v prepared at %v", task.ID, task.ServiceID, time.Now())
 		return transition(api.TaskStateStarting, "starting")
 	default: // terminal states
 		return noop()

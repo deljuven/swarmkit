@@ -11,6 +11,7 @@ import (
 	"github.com/docker/distribution/reference"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/identity"
+	"github.com/docker/swarmkit/log"
 	"github.com/docker/swarmkit/manager/constraint"
 	"github.com/docker/swarmkit/manager/scheduler"
 	"github.com/docker/swarmkit/manager/state/store"
@@ -496,6 +497,7 @@ func (s *Server) CreateService(ctx context.Context, request *api.CreateServiceRe
 		return nil, err
 	}
 
+	log.G(ctx).Infof("ALCLOG: service %v created at %v", service.ID, time.Now())
 	return &api.CreateServiceResponse{
 		Service: service,
 	}, nil
@@ -668,6 +670,8 @@ func (s *Server) UpdateService(ctx context.Context, request *api.UpdateServiceRe
 	if err != nil {
 		return nil, err
 	}
+
+	log.G(ctx).Infof("ALCLOG: service %v updated at %v", service.ID, time.Now())
 
 	return &api.UpdateServiceResponse{
 		Service: service,
