@@ -664,7 +664,7 @@ func (a *Agent) getImagesUpdates(ctx context.Context) (appends []string, removal
 
 	imageList, err := a.ImageList(ctx)
 	if err != nil {
-		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get image list on node")
+		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("ALCLOG: agent: failed to get image list on node")
 		return nil, nil, err
 	}
 	images := make([]string, 0)
@@ -693,7 +693,7 @@ func (a *Agent) getRootfsUpdates(ctx context.Context) (appends []string, removal
 
 	layers, err := a.GetLayers(ctx, "")
 	if err != nil {
-		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("agent: failed to get rootfs list on node")
+		log.G(ctx).WithError(err).WithField("agent", a.config.Executor).WithField("node", a.node.ID).Error("ALCLOG: agent: failed to get rootfs list on node")
 		return nil, nil, err
 	}
 	appends, removals = a.getUpdates(layers)

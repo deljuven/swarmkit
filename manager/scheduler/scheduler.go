@@ -125,6 +125,8 @@ type Scheduler struct {
 
 	scaleDownReq  chan *ScaleDownReq
 	scaleDownResp chan *ScaleDownResp
+
+	notification chan struct{}
 }
 
 // New creates a new scheduler.
@@ -142,6 +144,7 @@ func New(store *store.MemoryStore) *Scheduler {
 		rootfsMapping:    make(map[string]map[string]int),
 		imageMapping:     make(map[string]map[string]int),
 		factorKeys:       make(map[string][]string),
+		notification:     make(chan struct{}),
 	}
 }
 
@@ -268,13 +271,13 @@ func (s *Scheduler) SyncRootFSMapping(ctx context.Context, image string, encoded
 func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 	for {
 		if s.imageQueryResp == nil {
-			log.G(ctx).Error("(*Scheduler).handleSyncRootFSMapping not ready for chan is not inited")
+			log.G(ctx).Info("(*Scheduler).handleSyncRootFSMapping not ready for chan is closed")
 			return
 		}
 		select {
 		case resp, ok := <-s.imageQueryResp:
 			if !ok {
-				log.G(ctx).Error("(*Scheduler).HandleSyncRootFSMapping is no longer running for chan is closed")
+				log.G(ctx).Info("(*Scheduler).HandleSyncRootFSMapping is no longer running for chan is closed")
 				return
 			}
 			image, layers := resp.Image, resp.Layers
@@ -282,6 +285,13 @@ func (s *Scheduler) handleSyncRootFSMapping(ctx context.Context) {
 				layers = nil
 			}
 			s.updateFactorKeys(image, layers, true)
+			if s.notification == nil {
+				log.G(ctx).Info("(*Scheduler).handleSyncRootFSMapping not ready for chan is closed")
+				return
+			}
+			select {
+			case s.notification <- struct{}{}:
+			}
 		case <-ctx.Done():
 			log.G(ctx).Errorf("(*Scheduler).HandleSyncRootFSMapping is no longer running for %v", ctx.Err())
 			return
@@ -379,6 +389,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		commitDebounceGap = 50 * time.Millisecond
 		// maxLatency is a time limit on the debouncing.
 		maxLatency = time.Second
+
+		imgDebounceGap = 500 * time.Millisecond
+		imgMaxLatency  = 5 * time.Second
 	)
 	var (
 		debouncingStarted     time.Time
@@ -437,6 +450,22 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			schedule()
 			commitDebounceTimer = nil
 			commitDebounceTimeout = nil
+		case <-s.notification:
+			if commitDebounceTimer != nil {
+				if time.Since(debouncingStarted) > imgMaxLatency {
+					commitDebounceTimer.Stop()
+					commitDebounceTimer = nil
+					commitDebounceTimeout = nil
+					schedule()
+				} else {
+					commitDebounceTimer.Reset(imgDebounceGap)
+				}
+			} else {
+				commitDebounceTimer = time.NewTimer(imgDebounceGap)
+				commitDebounceTimeout = commitDebounceTimer.C
+				debouncingStarted = time.Now()
+			}
+			pendingChanges++
 		case <-s.stopChan:
 			return nil
 		}
@@ -446,6 +475,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 // Stop causes the scheduler event loop to stop running.
 func (s *Scheduler) Stop() {
 	close(s.stopChan)
+	old := s.notification
+	s.notification = nil
+	close(old)
 	<-s.doneChan
 }
 
@@ -1192,7 +1224,20 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 			}
 
 			if t == nil {
-				log.G(ctx).Warnf("no task for taskGroup %v", servSpec)
+				log.G(ctx).Infof("ALCLOG: no task for taskGroup %v", servSpec)
+				continue
+			}
+
+			factorExist := true
+			img := t.Spec.GetContainer().Image
+			switch SupportFlag {
+			case RootfsBased:
+				_, factorExist = s.factorKeys[img]
+			case ImageBased:
+				_, factorExist = s.factorKeys[img]
+			}
+			if !factorExist {
+				log.G(ctx).Infof("ALCLOG: image or rootfs query not ready for image %v at %v", img, time.Now())
 				continue
 			}
 
@@ -1223,7 +1268,7 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 		if _, exists := schedulingDecisions[taskID]; !exists {
 			old := tasks[taskID]
 			// update task and node
-			log.G(ctx).WithField("task.id", taskID).Debugf("image-based assigning to node %s", nodeID)
+			log.G(ctx).WithField("task.id", taskID).Debugf("ALCLOG: image-based assigning to node %s", nodeID)
 			newT := *old
 			newT.NodeID = nodeID
 			newT.Status = api.TaskStatus{
