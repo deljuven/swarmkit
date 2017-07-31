@@ -691,14 +691,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 	// so for n tasks, there should be n drf calls
 	scheduled := s.scheduleImageBaseTasks(ctx, tasksForImageBySpec, tasks, taskGroupKeys, schedulingDecisions)
 
+	tasksForImageBySpec = nil
 	if scheduled < imgBased {
-		leftTasks := make(map[string]*api.Task)
-		for _, ts := range tasksForImageBySpec {
-			for taskID, t := range ts {
-				leftTasks[taskID] = t
-			}
-		}
-		log.G(ctx).Errorf("ALCLOG: still have tasks %v left not delayed", leftTasks)
+		log.G(ctx).Debugf("%v tasks need to be scheduled later", imgBased - scheduled)
 	}
 
 	for _, taskGroup := range tasksByCommonSpec {
@@ -1231,7 +1226,12 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 			}
 
 			if t == nil {
-				log.G(ctx).Infof("ALCLOG: no task for taskGroup %v", servSpec)
+				log.G(ctx).Debugf("ALCLOG: no task for taskGroup %v", servSpec)
+				continue
+			}
+
+			if _, ok := tasks[t.ID]; !ok {
+				log.G(ctx).Debugf("ALCLOG: no task for taskGroup %v", servSpec)
 				continue
 			}
 
