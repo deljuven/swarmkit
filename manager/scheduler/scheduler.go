@@ -698,7 +698,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 				leftTasks[taskID] = t
 			}
 		}
-		s.noSuitableNode(ctx, leftTasks, schedulingDecisions)
+		log.G(ctx).Errorf("ALCLOG: still have tasks %v left not delayed", leftTasks)
 	}
 
 	for _, taskGroup := range tasksByCommonSpec {
@@ -1245,6 +1245,8 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, taskGroups map[s
 			}
 			if !factorExist {
 				log.G(ctx).Infof("ALCLOG: image or rootfs query not ready for image %v at %v", img, time.Now())
+				s.enqueue(t)
+				delete(tasks, t.ID)
 				continue
 			}
 
