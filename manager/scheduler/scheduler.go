@@ -361,8 +361,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				if _, ok := s.factorKeys[img]; !ok {
 					imgs[img] = struct{}{}
 					containerSpec := t.Spec.GetContainer()
+					var auth string
+					if containerSpec.PullOptions != nil {
+						auth = containerSpec.PullOptions.RegistryAuth
+					}
 					go func() {
-						err := s.SyncRootFSMapping(ctx, img, containerSpec.PullOptions.RegistryAuth)
+						err := s.SyncRootFSMapping(ctx, img, auth)
 						if err != nil {
 							log.G(ctx).Errorf("failed to query image %v layers, with error %v", containerSpec.Image, err)
 						}

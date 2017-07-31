@@ -46,7 +46,11 @@ func (r *Orchestrator) initServices(ctx context.Context, readTx store.ReadTx) er
 			if _, ok := imgs[ctnr.Image]; !ok {
 				imgs[ctnr.Image] = struct{}{}
 				go func() {
-					err := r.SyncRootFSMapping(ctx, ctnr.Image, ctnr.PullOptions.RegistryAuth)
+					var auth string
+					if ctnr.PullOptions != nil {
+						auth = ctnr.PullOptions.RegistryAuth
+					}
+					err := r.SyncRootFSMapping(ctx, ctnr.Image, auth)
 					if err != nil {
 						log.G(ctx).Errorf("failed to get image layer info for : %v", err)
 					}
@@ -72,20 +76,32 @@ func (r *Orchestrator) handleServiceEvent(ctx context.Context, event events.Even
 		}
 		r.reconcileServices[v.Service.ID] = v.Service
 		ctnr := v.Service.Spec.Task.GetContainer()
-		err := r.SyncRootFSMapping(ctx, ctnr.Image, ctnr.PullOptions.RegistryAuth)
-		if err != nil {
-			log.G(ctx).Errorf("failed to get image layer info for : %v", err)
+		var auth string
+		if ctnr.PullOptions != nil {
+			auth = ctnr.PullOptions.RegistryAuth
 		}
+		go func() {
+			err := r.SyncRootFSMapping(ctx, ctnr.Image, auth)
+			if err != nil {
+				log.G(ctx).Errorf("failed to get image layer info for : %v", err)
+			}
+		}()
 	case state.EventUpdateService:
 		if !orchestrator.IsReplicatedService(v.Service) {
 			return
 		}
 		r.reconcileServices[v.Service.ID] = v.Service
 		ctnr := v.Service.Spec.Task.GetContainer()
-		err := r.SyncRootFSMapping(ctx, ctnr.Image, ctnr.PullOptions.RegistryAuth)
-		if err != nil {
-			log.G(ctx).Errorf("failed to get image layer info for : %v", err)
+		var auth string
+		if ctnr.PullOptions != nil {
+			auth = ctnr.PullOptions.RegistryAuth
 		}
+		go func() {
+			err := r.SyncRootFSMapping(ctx, ctnr.Image, auth)
+			if err != nil {
+				log.G(ctx).Errorf("failed to get image layer info for : %v", err)
+			}
+		}()
 	}
 }
 
