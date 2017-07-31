@@ -752,6 +752,9 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 	if t == nil {
 		return
 	}
+	if len(t.Spec.Placement.Preferences) == 0 || t.Spec.Placement.Preferences[0].GetImage() == nil {
+		return
+	}
 	_, ok := s.serviceReplicas[t.ServiceID]
 	if counts, exist := nodeInfo.ActiveTasksCountByService[t.ServiceID]; exist && counts > 0 {
 		if !ok {
