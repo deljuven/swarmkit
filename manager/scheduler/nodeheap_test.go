@@ -12,125 +12,67 @@ import (
 )
 
 func TestDRFHeap(t *testing.T) {
-	node1 := &api.Node{ID: "node1"}
-	node2 := &api.Node{ID: "node2"}
-	node3 := &api.Node{ID: "node3"}
-	node4 := &api.Node{ID: "node4"}
+	nodeSize := 4
+	ns := make([]*api.Node, nodeSize)
+	for index := range ns {
+		ns[index] = &api.Node{ID: fmt.Sprintf("node%v", index+1)}
+	}
 
-	task1 := &api.Task{
-		ID:        "task1",
-		ServiceID: "service",
-		Spec: api.TaskSpec{
-			Runtime: &api.TaskSpec_Container{
-				Container: &api.ContainerSpec{
-					Image: "alpine",
+	tSize := 6
+	sSize := 2
+	taskList := make([]*api.Task, tSize)
+	for index := range taskList {
+		taskList[index] = &api.Task{
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{
+						Image: "alpine",
+					},
 				},
-			},
-			Resources: &api.ResourceRequirements{
-				Reservations: &api.Resources{
-					NanoCPUs:    1e9,
-					MemoryBytes: 2e7,
+				Resources: &api.ResourceRequirements{
+					Reservations: &api.Resources{
+						NanoCPUs:    1e9,
+						MemoryBytes: 2e7,
+					},
 				},
-			},
-			Placement: &api.Placement{
-				Preferences: []*api.PlacementPreference{
-					{
-						Preference: &api.PlacementPreference_Image{
-							Image: &api.ImageDependency{
-								ReplicaDescriptor: 2,
+				Placement: &api.Placement{
+					Preferences: []*api.PlacementPreference{
+						{
+							Preference: &api.PlacementPreference_Image{
+								Image: &api.ImageDependency{
+									ReplicaDescriptor: 2,
+								},
 							},
 						},
 					},
 				},
 			},
-		},
+		}
 	}
-
-	task2 := &api.Task{
-		ID:        "task2",
-		ServiceID: "service",
-		Spec: api.TaskSpec{
-			Runtime: &api.TaskSpec_Container{
-				Container: &api.ContainerSpec{
-					Image: "alpine",
-				},
-			},
-			Resources: &api.ResourceRequirements{
-				Reservations: &api.Resources{
-					NanoCPUs:    1e9,
-					MemoryBytes: 2e7,
-				},
-			},
-			Placement: &api.Placement{
-				Preferences: []*api.PlacementPreference{
-					{
-						Preference: &api.PlacementPreference_Image{
-							Image: &api.ImageDependency{
-								ReplicaDescriptor: 2,
-							},
-						},
-					},
-				},
-			},
-		},
+	sIds := make([]string, sSize)
+	for index := range sIds {
+		sIds[index] = fmt.Sprintf("service%v", index+1)
 	}
-
-	//task3 := &api.Task{
-	//	ID:        "task3",
-	//	ServiceID: "service",
-	//	Spec: api.TaskSpec{
-	//		Runtime: &api.TaskSpec_Container{
-	//			Container: &api.ContainerSpec{
-	//				Image: "alpine",
-	//			},
-	//		},
-	//		Resources: &api.ResourceRequirements{
-	//			Reservations: &api.Resources{
-	//				NanoCPUs:    1e9,
-	//				MemoryBytes: 2e7,
-	//			},
-	//		},
-	//		Placement: &api.Placement{
-	//			Preferences: []*api.PlacementPreference{
-	//				{
-	//					Preference: &api.PlacementPreference_Image{
-	//						Image: &api.ImageDependency{
-	//							ReplicaDescriptor: 2,
-	//						},
-	//					},
-	//				},
-	//			},
-	//		},
-	//	},
-	//}
+	tIds := make([]string, tSize)
+	for index := range tIds {
+		tIds[index] = fmt.Sprintf("task%v", index+1)
+	}
 
 	tasks := make(map[string]*api.Task)
-	tasks[task1.ID] = task1
-	tasks[task2.ID] = task2
+	for index, t := range taskList {
+		t.ID = tIds[index]
+		t.ServiceID = sIds[index%sSize]
+		tasks[t.ID] = t
+	}
 
 	// nodeInfo has no tasks
-	nodeInfo1 := newNodeInfo(node1, nil, api.Resources{
-		NanoCPUs:    1e10,
-		MemoryBytes: 2e8,
-	})
-	nodeInfo2 := newNodeInfo(node2, nil, api.Resources{
-		NanoCPUs:    1e10,
-		MemoryBytes: 1e8,
-	})
-	nodeInfo3 := newNodeInfo(node3, nil, api.Resources{
-		NanoCPUs:    1e10,
-		MemoryBytes: 1e8,
-	})
-	nodeInfo4 := newNodeInfo(node4, nil, api.Resources{
-		NanoCPUs:    1e10,
-		MemoryBytes: 1e8,
-	})
-
 	nodes := make(map[string]NodeInfo)
-	nodes[nodeInfo1.ID] = nodeInfo1
-	nodes[nodeInfo2.ID] = nodeInfo2
-	nodes[nodeInfo3.ID] = nodeInfo3
-	nodes[nodeInfo4.ID] = nodeInfo4
+	for _, n := range ns {
+		nodes[n.ID] = newNodeInfo(n, nil, api.Resources{
+			NanoCPUs:    1e10,
+			MemoryBytes: 1e8,
+		})
+	}
 
 	taskGroups := make(map[string]map[string]*api.Task)
 	for _, t := range tasks {
@@ -141,7 +83,10 @@ func TestDRFHeap(t *testing.T) {
 	}
 
 	toAllocReplicas := make(map[string]int)
-	toAllocReplicas["service"] = 2
+	for _, s := range sIds {
+		toAllocReplicas[s] = 2
+	}
+
 	serviceReplicas := make(map[string]map[string]int)
 	mapping := make(map[string]map[string]int)
 
@@ -158,11 +103,11 @@ func TestDRFHeap(t *testing.T) {
 			}
 		}
 
-		// node compare, node if replica is filled, node without same service first
+		// node compare, if replica is filled, node without same service first
 		replicas := *h.serviceReplicas
 		_, okI := replicas[ni.serviceID][ni.nodeID]
 		_, okJ := replicas[nj.serviceID][nj.nodeID]
-		if toReplicas[ni.serviceID] != 0 {
+		if toReplicas[ni.serviceID] > 0 {
 			if okI && !okJ {
 				return false
 			} else if !okI && okJ {
@@ -210,6 +155,7 @@ func TestDRFHeap(t *testing.T) {
 		}
 	}
 
+	result := make(map[string]string)
 	for {
 		// init drf heap
 		drfHeap.nodes = make([]drfNode, 0)
@@ -233,8 +179,8 @@ func TestDRFHeap(t *testing.T) {
 
 			// filter nodes
 			for _, node := range nodes {
-				if node.AvailableResources.MemoryBytes > t.Spec.Resources.Reservations.MemoryBytes &&
-					node.AvailableResources.NanoCPUs > t.Spec.Resources.Reservations.NanoCPUs {
+				if node.AvailableResources.MemoryBytes >= t.Spec.Resources.Reservations.MemoryBytes &&
+					node.AvailableResources.NanoCPUs >= t.Spec.Resources.Reservations.NanoCPUs {
 					n := newDRFNode(node, t.ServiceID, t)
 					if fittest == nil || drfHeap.drfLess(*n, *fittest, &drfHeap) {
 						fittest = n
@@ -248,23 +194,27 @@ func TestDRFHeap(t *testing.T) {
 			break
 		}
 
-		toAllocReplicas["service"]--
+		node := nodes[fittest.nodeID]
+		task := tasks[fittest.taskID]
+		result[fittest.taskID] = fittest.nodeID
+		toAllocReplicas[fittest.serviceID]--
 		if _, ok := serviceReplicas[fittest.serviceID]; !ok {
 			serviceReplicas[fittest.serviceID] = make(map[string]int)
 		}
-		node := nodes[fittest.nodeID]
-		task := tasks[fittest.taskID]
 		node.AvailableResources.MemoryBytes -= task.Spec.Resources.Reservations.MemoryBytes
 		node.AvailableResources.NanoCPUs -= task.Spec.Resources.Reservations.NanoCPUs
+		nodes[fittest.nodeID] = node
 		serviceReplicas[fittest.serviceID][fittest.nodeID]++
 		mapping[fittest.serviceID][fittest.nodeID]++
 		old := taskGroups[fittest.serviceID]
 		delete(old, fittest.taskID)
+		delete(tasks, fittest.taskID)
 		if len(old) == 0 {
 			delete(taskGroups, fittest.serviceID)
 		}
 
-		fmt.Printf("node %v with task %v \n", fittest.nodeID, fittest.taskID)
+		fmt.Printf("node %v with task %v for service %v, reserved %v, avail %v\n",
+			fittest.nodeID, fittest.taskID, fittest.serviceID, fittest.dominantReserved, fittest.dominantAvailable)
 		//expected := newDRFNode(nodeInfo1, task2.ServiceID, task2)
 		//assert.Equal(t, *expected, fittest, "should be equal")
 	}

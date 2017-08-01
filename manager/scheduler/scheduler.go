@@ -776,10 +776,11 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 		}
 	}
 
-	s.toAllocReplicas[t.ServiceID] = s.replicas[t.ServiceID] - len(s.serviceReplicas[t.ServiceID])
-	if s.toAllocReplicas[t.ServiceID] < 0 {
-		s.toAllocReplicas[t.ServiceID] = 0
+	replica := s.replicas[t.ServiceID] - len(s.serviceReplicas[t.ServiceID])
+	if replica < 0 {
+		replica = 0
 	}
+	s.toAllocReplicas[t.ServiceID] = replica
 }
 
 func (s *Scheduler) applySchedulingDecisions(ctx context.Context, schedulingDecisions map[string]schedulingDecision) (successful, failed []schedulingDecision) {
@@ -1114,18 +1115,17 @@ func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *
 			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
 				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
 			}
-		}
-
-		// node compare, node if replica is filled, node without same service first
-		// spread across nodes to meet replica requirements
-		replicas := *h.serviceReplicas
-		_, okI := replicas[ni.serviceID][ni.nodeID]
-		_, okJ := replicas[nj.serviceID][nj.nodeID]
-		if toReplicas[ni.serviceID] != 0 {
-			if okI && !okJ {
-				return false
-			} else if !okI && okJ {
-				return true
+			// node compare, if replica constraint is filled, node without same service first
+			// spread across nodes to meet replica requirements
+			replicas := *h.serviceReplicas
+			_, okI := replicas[ni.serviceID][ni.nodeID]
+			_, okJ := replicas[nj.serviceID][nj.nodeID]
+			if toReplicas[ni.serviceID] > 0 {
+				if okI && !okJ {
+					return false
+				} else if !okI && okJ {
+					return true
+				}
 			}
 		}
 
@@ -1214,13 +1214,15 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, task
 	}
 
 	for serviceID := range s.toAllocReplicas {
+		replica := 0
 		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
-			s.toAllocReplicas[serviceID] = s.replicas[serviceID] - len(servReplica)
+			replica = s.replicas[serviceID] - len(servReplica)
 		}
-		if s.toAllocReplicas[serviceID] < 0 {
-			log.G(ctx).Infof("ALCLOG: %v more replica than needed for service %v", -s.toAllocReplicas[serviceID], serviceID)
-			s.toAllocReplicas[serviceID] = 0
+		if replica < 0 {
+			log.G(ctx).Infof("ALCLOG: %v more replica than needed for service %v", -replica, serviceID)
+			replica = 0
 		}
+		s.toAllocReplicas[serviceID] = replica
 	}
 
 	//specs := make(map[string]api.TaskSpec)
