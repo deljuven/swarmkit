@@ -147,6 +147,7 @@ func newDRFNodes(node NodeInfo, serviceID string, tasks map[string]*api.Task) []
 type nodeDRFHeap struct {
 	nodes           []drfNode
 	toAllocReplicas *map[string]int
+	serviceReplicas *map[string]map[string]int
 	// coherence factor mapping, mapping from service to node or image to node or rootfs to node
 	coherenceMapping *map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
@@ -191,6 +192,8 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []*api.Task, meetsConstrai
 	}
 	allocTmp := make(map[string]int)
 	h.toAllocReplicas = &allocTmp
+	replTmp := make(map[string]map[string]int)
+	h.serviceReplicas = &replTmp
 	coherenceTmp := make(map[string]map[string]int)
 	h.coherenceMapping = &coherenceTmp
 	serviceTmp := make(map[string][]string)
