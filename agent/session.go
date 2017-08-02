@@ -415,8 +415,8 @@ func (s *session) close() error {
 }
 
 const (
-	syncInterval = 5 * time.Minute
-	syncTimeout  = 30 * time.Second
+	syncInterval = 10 * time.Second
+	syncTimeout  = 5 * time.Second
 )
 
 func (s *session) syncTick(ctx context.Context) error {

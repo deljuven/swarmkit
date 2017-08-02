@@ -119,40 +119,16 @@ func newMaxDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
 	return drfNode
 }
 
-func newDRFNodes(node NodeInfo, serviceID string, tasks map[string]*api.Task) []drfNode {
-	nodes := make([]drfNode, len(tasks))
-	taskList := make([]*api.Task, 0)
-	for _, t := range tasks {
-		taskList = append(taskList, t)
-	}
-	for index := range nodes {
-		nodes[index] = drfNode{}
-		nodes[index].nodeID = node.ID
-		nodes[index].taskID = taskList[index].ID
-		nodes[index].serviceID = serviceID
-		switch SupportFlag {
-		case RootfsBased:
-			nodes[index].key = serviceID
-		case ImageBased:
-			fallthrough
-		case ServiceBased:
-			nodes[index].key = taskList[index].Spec.GetContainer().Image
-		}
-		nodes[index].dominantReserved, nodes[index].dominantAvailable = getDrfResource(node, taskList[index])
-	}
-	return nodes
-}
-
 // build a min heap for drf algorithm, which is based on max-top fairness
 type nodeDRFHeap struct {
 	nodes           []drfNode
-	toAllocReplicas *map[string]int
-	serviceReplicas *map[string]map[string]int
+	toAllocReplicas map[string]int
+	serviceReplicas map[string]map[string]int
 	// coherence factor mapping, mapping from service to node or image to node or rootfs to node
-	coherenceMapping *map[string]map[string]int
+	coherenceMapping map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
-	factorKeyMapping *map[string][]string
-	drfLess          func(drfNode, drfNode, *nodeDRFHeap) bool
+	factorKeyMapping map[string][]string
+	drfLess          func(drfNode, drfNode, nodeDRFHeap) bool
 }
 
 func (h nodeDRFHeap) Len() int {
@@ -165,7 +141,7 @@ func (h nodeDRFHeap) Swap(i, j int) {
 
 func (h nodeDRFHeap) Less(i, j int) bool {
 	// reversed to make a drf-heap
-	return h.drfLess(h.nodes[i], h.nodes[j], &h)
+	return h.drfLess(h.nodes[i], h.nodes[j], h)
 }
 
 func (h *nodeDRFHeap) Push(x interface{}) {
@@ -190,33 +166,9 @@ func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []*api.Task, meetsConstrai
 			}
 		}
 	}
-	allocTmp := make(map[string]int)
-	h.toAllocReplicas = &allocTmp
-	replTmp := make(map[string]map[string]int)
-	h.serviceReplicas = &replTmp
-	coherenceTmp := make(map[string]map[string]int)
-	h.coherenceMapping = &coherenceTmp
-	serviceTmp := make(map[string][]string)
-	h.factorKeyMapping = &serviceTmp
+	h.toAllocReplicas = make(map[string]int)
+	h.serviceReplicas = make(map[string]map[string]int)
+	h.coherenceMapping = make(map[string]map[string]int)
+	h.factorKeyMapping = make(map[string][]string)
 
-}
-
-func (h *nodeDRFHeap) bottom() drfNode {
-	max := h.nodes[0]
-	for _, node := range h.nodes {
-		if h.drfLess(max, node, h) {
-			max = node
-		}
-	}
-	return max
-}
-
-func (h *nodeDRFHeap) top() drfNode {
-	min := h.nodes[0]
-	for _, node := range h.nodes {
-		if h.drfLess(node, min, h) {
-			min = node
-		}
-	}
-	return min
 }

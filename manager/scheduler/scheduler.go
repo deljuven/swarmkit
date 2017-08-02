@@ -771,16 +771,13 @@ func (s *Scheduler) updateRunningServReplicas(nodeInfo NodeInfo, t *api.Task) {
 		if ok {
 			delete(s.serviceReplicas[t.ServiceID], nodeInfo.ID)
 			if len(s.serviceReplicas[t.ServiceID]) == 0 {
+				delete(s.serviceReplicas, t.ServiceID)
 				s.updateFactorKeys(t.ServiceID, nil, false)
 			}
 		}
 	}
 
-	replica := s.replicas[t.ServiceID] - len(s.serviceReplicas[t.ServiceID])
-	if replica < 0 {
-		replica = 0
-	}
-	s.toAllocReplicas[t.ServiceID] = replica
+	s.toAllocReplicas[t.ServiceID] = s.replicas[t.ServiceID] - len(s.serviceReplicas[t.ServiceID])
 }
 
 func (s *Scheduler) applySchedulingDecisions(ctx context.Context, schedulingDecisions map[string]schedulingDecision) (successful, failed []schedulingDecision) {
@@ -1102,22 +1099,22 @@ func (s *Scheduler) buildNodeSet(tx store.ReadTx, tasksByNode map[string]map[str
 	return nil
 }
 
-func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *map[string][]string, coherenceMapping, serviceReplicas *map[string]map[string]int) *nodeDRFHeap {
-	drfHeap := &nodeDRFHeap{}
+func (s *Scheduler) initDrfMinHeap(toAllocReplicas map[string]int, factorKeys map[string][]string, coherenceMapping, serviceReplicas map[string]map[string]int) nodeDRFHeap {
+	drfHeap := nodeDRFHeap{}
 	drfHeap.toAllocReplicas = toAllocReplicas
 	drfHeap.factorKeyMapping = factorKeys
 	drfHeap.coherenceMapping = coherenceMapping
 	drfHeap.serviceReplicas = serviceReplicas
-	drfHeap.drfLess = func(ni, nj drfNode, h *nodeDRFHeap) bool {
+	drfHeap.drfLess = func(ni, nj drfNode, h nodeDRFHeap) bool {
 		// replica compare, services with less replicas first
-		toReplicas := *h.toAllocReplicas
+		toReplicas := h.toAllocReplicas
 		if toReplicas != nil {
 			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
 				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
 			}
 			// node compare, if replica constraint is filled, node without same service first
 			// spread across nodes to meet replica requirements
-			replicas := *h.serviceReplicas
+			replicas := h.serviceReplicas
 			_, okI := replicas[ni.serviceID][ni.nodeID]
 			_, okJ := replicas[nj.serviceID][nj.nodeID]
 			if toReplicas[ni.serviceID] > 0 {
@@ -1126,13 +1123,19 @@ func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *
 				} else if !okI && okJ {
 					return true
 				}
+			} else {
+				if okI && !okJ {
+					return true
+				} else if !okI && okJ {
+					return false
+				}
 			}
 		}
 
 		// coherence compare, services with more coherence factor first
 		if h.coherenceMapping != nil && h.factorKeyMapping != nil {
-			coherencesMapping := *h.coherenceMapping
-			factorKeysMapping := *h.factorKeyMapping
+			coherencesMapping := h.coherenceMapping
+			factorKeysMapping := h.factorKeyMapping
 			//coherenceI, coherenceJ := 0,0
 			factorKeysI, okI := factorKeysMapping[ni.key]
 			factorKeysJ, okJ := factorKeysMapping[nj.key]
@@ -1214,30 +1217,27 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, task
 	}
 
 	for serviceID := range s.toAllocReplicas {
-		replica := 0
 		if servReplica, ok := s.serviceReplicas[serviceID]; ok {
-			replica = s.replicas[serviceID] - len(servReplica)
+			s.toAllocReplicas[serviceID] = s.replicas[serviceID] - len(servReplica)
 		}
-		if replica < 0 {
-			log.G(ctx).Infof("ALCLOG: %v more replica than needed for service %v", -replica, serviceID)
-			replica = 0
+		if s.toAllocReplicas[serviceID] < 0 {
+			log.G(ctx).Infof("ALCLOG: %v more replica than needed for service %v", -s.toAllocReplicas[serviceID], serviceID)
 		}
-		s.toAllocReplicas[serviceID] = replica
 	}
 
 	//specs := make(map[string]api.TaskSpec)
 	taskScheduled := 0
 
-	var coherenceMapping *map[string]map[string]int
+	var coherenceMapping map[string]map[string]int
 	switch SupportFlag {
 	case RootfsBased:
-		coherenceMapping = &s.rootfsMapping
+		coherenceMapping = s.rootfsMapping
 	case ImageBased:
-		coherenceMapping = &s.imageMapping
+		coherenceMapping = s.imageMapping
 	case ServiceBased:
-		coherenceMapping = &s.serviceReplicas
+		coherenceMapping = s.serviceReplicas
 	}
-	drfHeap := s.initDrfMinHeap(&s.toAllocReplicas, &s.factorKeys, coherenceMapping, &s.serviceReplicas)
+	drfHeap := s.initDrfMinHeap(s.toAllocReplicas, s.factorKeys, coherenceMapping, s.serviceReplicas)
 
 	for {
 		// init drf heap
@@ -1417,7 +1417,7 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required ui
 			for _, node := range scaleNodes {
 				if s.pipeline.Process(&node) {
 					n := newMaxDRFNode(node, task.ServiceID, task)
-					if fittest == nil || drfHeap.drfLess(*n, *fittest, drfHeap) {
+					if fittest == nil || drfHeap.drfLess(*n, *fittest, *drfHeap) {
 						fittest = n
 					}
 					//drfHeap.nodes = append(drfHeap.nodes, *newMaxDRFNode(node, task.ServiceID, task))
@@ -1459,7 +1459,7 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required ui
 
 func (s *Scheduler) initDrfMaxHeap() *nodeDRFHeap {
 	drfHeap := &nodeDRFHeap{}
-	drfHeap.drfLess = func(nj, ni drfNode, h *nodeDRFHeap) bool {
+	drfHeap.drfLess = func(nj, ni drfNode, h nodeDRFHeap) bool {
 		// drf compare
 		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
 		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable

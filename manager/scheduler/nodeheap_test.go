@@ -11,16 +11,15 @@ import (
 	"time"
 )
 
-func TestDRFHeap(t *testing.T) {
-	nodeSize := 4
+func initWorkset(nodeSize, taskSize, serviceSize int) (nodes map[string]NodeInfo, tasks map[string]*api.Task, services []string) {
+	tasks = make(map[string]*api.Task)
+	nodes = make(map[string]NodeInfo)
 	ns := make([]*api.Node, nodeSize)
 	for index := range ns {
 		ns[index] = &api.Node{ID: fmt.Sprintf("node%v", index+1)}
 	}
 
-	tSize := 6
-	sSize := 2
-	taskList := make([]*api.Task, tSize)
+	taskList := make([]*api.Task, taskSize)
 	for index := range taskList {
 		taskList[index] = &api.Task{
 			Spec: api.TaskSpec{
@@ -49,30 +48,45 @@ func TestDRFHeap(t *testing.T) {
 			},
 		}
 	}
-	sIds := make([]string, sSize)
-	for index := range sIds {
-		sIds[index] = fmt.Sprintf("service%v", index+1)
+	services = make([]string, serviceSize)
+	for index := range services {
+		services[index] = fmt.Sprintf("service%v", index+1)
 	}
-	tIds := make([]string, tSize)
+	tIds := make([]string, taskSize)
 	for index := range tIds {
 		tIds[index] = fmt.Sprintf("task%v", index+1)
 	}
 
-	tasks := make(map[string]*api.Task)
 	for index, t := range taskList {
 		t.ID = tIds[index]
-		t.ServiceID = sIds[index%sSize]
+		t.ServiceID = services[index%serviceSize]
 		tasks[t.ID] = t
 	}
-
-	// nodeInfo has no tasks
-	nodes := make(map[string]NodeInfo)
+	can := true
 	for _, n := range ns {
-		nodes[n.ID] = newNodeInfo(n, nil, api.Resources{
-			NanoCPUs:    1e10,
-			MemoryBytes: 1e8,
-		})
+		if can {
+			nodes[n.ID] = newNodeInfo(n, nil, api.Resources{
+				NanoCPUs:    1e10,
+				MemoryBytes: 1.9e8,
+			})
+			can = false
+		} else {
+			nodes[n.ID] = newNodeInfo(n, nil, api.Resources{
+				NanoCPUs:    1e10,
+				MemoryBytes: 9e7,
+			})
+		}
 	}
+	return
+}
+
+func TestDRFHeap(t *testing.T) {
+	nodeSize, tSize, sSize := 4, 10, 3
+	nodes, tasks, services := initWorkset(nodeSize, tSize, sSize)
+
+	tasks["task7"].ServiceID = "service3"
+	tasks["task8"].ServiceID = "service3"
+	tasks["task10"].ServiceID = "service3"
 
 	taskGroups := make(map[string]map[string]*api.Task)
 	for _, t := range tasks {
@@ -83,7 +97,7 @@ func TestDRFHeap(t *testing.T) {
 	}
 
 	toAllocReplicas := make(map[string]int)
-	for _, s := range sIds {
+	for _, s := range services {
 		toAllocReplicas[s] = 2
 	}
 
@@ -91,39 +105,60 @@ func TestDRFHeap(t *testing.T) {
 	mapping := make(map[string]map[string]int)
 
 	var drfHeap nodeDRFHeap
-	drfHeap.toAllocReplicas = &toAllocReplicas
-	drfHeap.serviceReplicas = &serviceReplicas
-	drfHeap.coherenceMapping = &mapping
-	drfHeap.drfLess = func(ni, nj drfNode, h *nodeDRFHeap) bool {
+	drfHeap.toAllocReplicas = toAllocReplicas
+	drfHeap.serviceReplicas = serviceReplicas
+	drfHeap.coherenceMapping = mapping
+	drfHeap.drfLess = func(ni, nj drfNode, h nodeDRFHeap) bool {
 		// replica compare, services with less replicas first
-		toReplicas := *h.toAllocReplicas
+		toReplicas := h.toAllocReplicas
 		if toReplicas != nil {
 			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
 				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
 			}
-		}
-
-		// node compare, if replica is filled, node without same service first
-		replicas := *h.serviceReplicas
-		_, okI := replicas[ni.serviceID][ni.nodeID]
-		_, okJ := replicas[nj.serviceID][nj.nodeID]
-		if toReplicas[ni.serviceID] > 0 {
-			if okI && !okJ {
-				return false
-			} else if !okI && okJ {
-				return true
+			// node compare, if replica is filled, node without same service first
+			replicas := h.serviceReplicas
+			_, okI := replicas[ni.serviceID][ni.nodeID]
+			_, okJ := replicas[nj.serviceID][nj.nodeID]
+			if toReplicas[ni.serviceID] > 0 {
+				if okI && !okJ {
+					return false
+				} else if !okI && okJ {
+					return true
+				}
+			} else {
+				if okI && !okJ {
+					return true
+				} else if !okI && okJ {
+					return false
+				}
 			}
 		}
 
-		mapping := *h.coherenceMapping
+		mapping := h.coherenceMapping
 		if _, exists := mapping[ni.serviceID]; !exists {
 			mapping[ni.serviceID] = make(map[string]int)
 		}
 		if _, exists := mapping[nj.serviceID]; !exists {
 			mapping[nj.serviceID] = make(map[string]int)
 		}
-		_, okI = mapping[ni.serviceID][ni.nodeID]
-		_, okJ = mapping[nj.serviceID][nj.nodeID]
+		okI, okJ := false, false
+		okI2, okJ2 := false, false
+		if ni.serviceID == "service3" {
+			_, okI = mapping["service1"][ni.nodeID]
+		}
+		if nj.serviceID == "service3" {
+			_, okJ = mapping["service1"][nj.nodeID]
+		}
+		if ni.serviceID == "service1" {
+			_, okI2 = mapping["service3"][ni.nodeID]
+		}
+		if nj.serviceID == "service1" {
+			_, okJ2 = mapping["service3"][nj.nodeID]
+		}
+		_, sI := mapping[ni.serviceID][ni.nodeID]
+		_, sJ := mapping[nj.serviceID][nj.nodeID]
+		okI = okI || sI || okI2
+		okJ = okJ || sJ || okJ2
 		if okI && !okJ {
 			return true
 		} else if !okI && okJ {
@@ -182,7 +217,7 @@ func TestDRFHeap(t *testing.T) {
 				if node.AvailableResources.MemoryBytes >= t.Spec.Resources.Reservations.MemoryBytes &&
 					node.AvailableResources.NanoCPUs >= t.Spec.Resources.Reservations.NanoCPUs {
 					n := newDRFNode(node, t.ServiceID, t)
-					if fittest == nil || drfHeap.drfLess(*n, *fittest, &drfHeap) {
+					if fittest == nil || drfHeap.drfLess(*n, *fittest, drfHeap) {
 						fittest = n
 					}
 				}
@@ -218,6 +253,10 @@ func TestDRFHeap(t *testing.T) {
 		//expected := newDRFNode(nodeInfo1, task2.ServiceID, task2)
 		//assert.Equal(t, *expected, fittest, "should be equal")
 	}
+}
+
+func TestScaleDown(t *testing.T) {
+
 }
 
 func TestHugeDRFHeap(t *testing.T) {
@@ -264,7 +303,7 @@ func TestHugeDRFHeap(t *testing.T) {
 	}
 
 	drfHeap := &nodeDRFHeap{}
-	drfHeap.drfLess = func(ni, nj drfNode, h *nodeDRFHeap) bool {
+	drfHeap.drfLess = func(ni, nj drfNode, h nodeDRFHeap) bool {
 		// drf compare
 		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
 		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
@@ -303,7 +342,7 @@ func TestHugeDRFHeap(t *testing.T) {
 					n := newDRFNode(*node, task.ServiceID, task)
 					if min == nil {
 						min = n
-					} else if drfHeap.drfLess(*min, *n, drfHeap) {
+					} else if drfHeap.drfLess(*min, *n, *drfHeap) {
 						min = n
 					}
 					//drfHeap.nodes = append(drfHeap.nodes, *newDRFNode(*node, task.ServiceID, task))
