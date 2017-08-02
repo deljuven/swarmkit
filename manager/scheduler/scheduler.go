@@ -1195,6 +1195,9 @@ func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *
 
 // serviceReplicas is used for image-based service, indicating number of image replica needed to be scheduled
 func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, taskGroups map[string]map[string]*api.Task, tasks map[string]*api.Task, taskGroupKeys map[string]string, schedulingDecisions map[string]schedulingDecision) int {
+	if counts == 0 {
+		return 0
+	}
 	//tasksByImage := make([]*api.Task, 0)
 	// cause drf change resource usage during calculation, use nodes to copy the nodeset.nodes
 	nodes := make(map[string]NodeInfo)
