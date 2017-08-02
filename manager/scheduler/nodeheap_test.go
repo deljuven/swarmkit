@@ -5,6 +5,7 @@ import (
 
 	"container/heap"
 	"fmt"
+	"github.com/docker/docker/pkg/testutil/assert"
 	"github.com/docker/swarmkit/api"
 	"math/big"
 	"strings"
@@ -255,8 +256,233 @@ func TestDRFHeap(t *testing.T) {
 	}
 }
 
-func TestScaleDown(t *testing.T) {
+func initRunningWorkset() (tasks map[string]*api.Task, services []string, nodes map[string]NodeInfo) {
+	nodeSize, taskSize, serviceSize := 4, 10, 3
+	tasks = make(map[string]*api.Task)
+	nodes = make(map[string]NodeInfo)
+	nds := make(map[string]*NodeInfo)
+	ns := make([]*api.Node, nodeSize)
+	for index := range ns {
+		ns[index] = &api.Node{ID: fmt.Sprintf("node%v", index+1)}
+	}
 
+	taskList := make([]*api.Task, taskSize)
+	for index := range taskList {
+		taskList[index] = &api.Task{
+			Slot: uint64(index + 1),
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{
+						Image: "alpine",
+					},
+				},
+				Resources: &api.ResourceRequirements{
+					Reservations: &api.Resources{
+						NanoCPUs:    1e9,
+						MemoryBytes: 2e7,
+					},
+				},
+				Placement: &api.Placement{
+					Preferences: []*api.PlacementPreference{
+						{
+							Preference: &api.PlacementPreference_Image{
+								Image: &api.ImageDependency{
+									ReplicaDescriptor: 2,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	services = make([]string, serviceSize)
+	for index := range services {
+		services[index] = fmt.Sprintf("service%v", index+1)
+	}
+	tIds := make([]string, taskSize)
+	for index := range tIds {
+		tIds[index] = fmt.Sprintf("task%v", index+1)
+	}
+
+	can := true
+	for _, n := range ns {
+		if can {
+			newNode := newNodeInfo(n, make(map[string]*api.Task), api.Resources{
+				NanoCPUs:    1e10,
+				MemoryBytes: 1.9e8,
+			})
+			nds[n.ID] = &newNode
+			can = false
+		} else {
+			newNode := newNodeInfo(n, make(map[string]*api.Task), api.Resources{
+				NanoCPUs:    1e10,
+				MemoryBytes: 9e7,
+			})
+			nds[n.ID] = &newNode
+		}
+	}
+
+	for index, t := range taskList {
+		t.ID = tIds[index]
+		if index > (2 * serviceSize) {
+			t.ServiceID = services[0]
+			t.NodeID = ns[0].ID
+		} else {
+			t.ServiceID = services[index%serviceSize]
+			t.NodeID = ns[index%nodeSize].ID
+		}
+		nds[t.NodeID].Tasks[t.ID] = t
+		nds[t.NodeID].AvailableResources.NanoCPUs -= t.Spec.Resources.Reservations.NanoCPUs
+		nds[t.NodeID].AvailableResources.MemoryBytes -= t.Spec.Resources.Reservations.MemoryBytes
+		tasks[t.ID] = t
+	}
+
+	for ID, n := range nds {
+		nodes[ID] = *n
+	}
+
+	return
+}
+
+func scaleDown(serviceID string, required uint64, serviceReplicas map[string]map[string]int, replicas map[string]int, nodeSet map[string]NodeInfo) (slots map[uint64]struct{}) {
+	removeCandidates := make(map[uint64]struct{})
+	slots = make(map[uint64]struct{})
+
+	counter := int(required)
+	servReplicas := serviceReplicas[serviceID]
+	replica := len(servReplicas)
+	serviceReplica := replicas[serviceID]
+	slotsMap := make(map[uint64]int)
+	scaleCandidates := make(map[string]*api.Task)
+	instancesNodes := make(map[string]int)
+	replicaNodes := make(map[string]NodeInfo)
+	for nodeID := range servReplicas {
+		if node, ok := nodeSet[nodeID]; ok {
+			replicaNodes[nodeID] = node
+			instancesNodes[nodeID] = servReplicas[nodeID]
+			for taskID, task := range node.Tasks {
+				if task.ServiceID == serviceID {
+					slotsMap[task.Slot]++
+					scaleCandidates[taskID] = task
+				}
+			}
+		}
+	}
+	initDrfMaxHeap := func() *nodeDRFHeap {
+		drfHeap := &nodeDRFHeap{}
+		drfHeap.drfLess = func(nj, ni drfNode, h nodeDRFHeap) bool {
+			// drf compare
+			reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
+			reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
+			cmp := big.NewRat(reservedI.amount, availableI.amount).Cmp(big.NewRat(reservedJ.amount, availableJ.amount))
+			if cmp < 0 {
+				return true
+			} else if cmp > 0 {
+				return false
+			}
+
+			leftI, typeI := availableI.amount-reservedI.amount, availableI.resourceType
+			leftJ, typeJ := availableJ.amount-reservedJ.amount, availableJ.resourceType
+			// drf resource with same type, choose the least left amount; otherwise, choose cpu type
+			if typeI == typeJ {
+				if leftI == leftJ {
+					return strings.Compare(ni.nodeID, nj.nodeID) < 0
+				}
+				return leftI < leftJ
+			} else if typeI == cpu {
+				return true
+			} else {
+				return false
+			}
+		}
+		return drfHeap
+	}
+	drfHeap := initDrfMaxHeap()
+	for {
+		if counter == len(removeCandidates) {
+			break
+		}
+		// init drf heap
+		drfHeap.nodes = make([]drfNode, 0)
+		var fittest *drfNode
+		for _, task := range scaleCandidates {
+			// filter nodes
+			n := newMaxDRFNode(replicaNodes[task.NodeID], task.ServiceID, task)
+			if fittest == nil || drfHeap.drfLess(*n, *fittest, *drfHeap) {
+				fittest = n
+			}
+		}
+
+		if fittest == nil {
+			break
+		}
+
+		if instancesNodes[fittest.nodeID] == 1 {
+			if replica == serviceReplica {
+				slot := scaleCandidates[fittest.taskID].Slot
+				slotsMap[slot]--
+				if slotsMap[slot] == 0 {
+					delete(slotsMap, slot)
+				}
+				delete(scaleCandidates, fittest.taskID)
+				continue
+			} else {
+				replica--
+			}
+		}
+
+		nodeID, taskID := fittest.nodeID, fittest.taskID
+		slot := scaleCandidates[taskID].Slot
+		removeCandidates[slot] = struct{}{}
+		delete(slotsMap, slot)
+		delete(scaleCandidates, taskID)
+		instancesNodes[nodeID]--
+	}
+
+	if len(removeCandidates) == 0 {
+		return nil
+	}
+	for slot := range removeCandidates {
+		slots[slot] = struct{}{}
+	}
+	return
+}
+
+func TestScaleDown(t *testing.T) {
+	_, _, nodes := initRunningWorkset()
+	//for _, n := range nodes {
+	//	srv := make(map[string]map[string]int)
+	//	for i, t := range n.Tasks {
+	//		if _, ok := srv[t.ServiceID]; !ok {
+	//			srv[t.ServiceID] = make(map[string]int)
+	//		}
+	//		srv[t.ServiceID][i] = 1
+	//	}
+	//	fmt.Printf("tasks %v \n", srv)
+	//	fmt.Printf("node %v \n", n.ID)
+	//}
+
+	serviceReplicas := make(map[string]map[string]int)
+	replicas := make(map[string]int)
+
+	for _, n := range nodes {
+		for _, t := range n.Tasks {
+			if _, ok := serviceReplicas[t.ServiceID]; !ok {
+				serviceReplicas[t.ServiceID] = make(map[string]int)
+			}
+			serviceReplicas[t.ServiceID][t.NodeID]++
+			if _, ok := replicas[t.ServiceID]; !ok {
+				replicas[t.ServiceID] = int(t.Spec.Placement.Preferences[0].GetImage().ReplicaDescriptor)
+			}
+		}
+	}
+	slots := scaleDown("service1", 3, serviceReplicas, replicas, nodes)
+	assert.Equal(t, len(slots), 3)
+	slots = scaleDown("service1", 4, serviceReplicas, replicas, nodes)
+	assert.Equal(t, len(slots), 4)
+	slots = scaleDown("service1", 5, serviceReplicas, replicas, nodes)
+	assert.Equal(t, len(slots), 4)
 }
 
 func TestHugeDRFHeap(t *testing.T) {

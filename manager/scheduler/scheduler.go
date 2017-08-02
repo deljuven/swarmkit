@@ -1350,66 +1350,57 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, task
 
 // scaleDown try to scale down related service to required instances without changing replica distribution
 // Later we should add replica reshuffle mechanism which reduces service redundant replicas
-func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required uint64) (slots map[uint64]struct{}) {
-	removeSlot := make(map[uint64]struct{})
+// required is the slot number needed to be scaled down. Following Try It Best strategy
+func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, down uint64) (slots map[uint64]struct{}) {
+	removeCandidates := make(map[uint64]struct{})
 
-	replicaNodes := s.serviceReplicas[serviceID]
-	slotsMap := make(map[uint64]struct{})
+	counter := int(down)
+	servReplicas := s.serviceReplicas[serviceID]
+	replica := len(servReplicas)
+	serviceReplica := s.replicas[serviceID]
+	slotsMap := make(map[uint64]int)
 	scaleCandidates := make(map[string]*api.Task)
-	instances := 0
-	removable := 0
 	instancesNodes := make(map[string]int)
-	scaleNodes := make(map[string]NodeInfo)
-	allTasks := make(map[uint64]map[string]*api.Task)
-	for nodeID := range replicaNodes {
-		instances += replicaNodes[nodeID]
-		if replicaNodes[nodeID] > 1 {
-			if node, err := s.nodeSet.nodeInfo(nodeID); err != nil {
-				scaleNodes[nodeID] = node
-				instancesNodes[nodeID] = replicaNodes[nodeID]
-				for taskID, task := range node.Tasks {
-					if task.ServiceID == serviceID {
-						if _, ok := slotsMap[task.Slot]; !ok {
-							slotsMap[task.Slot] = struct{}{}
-							scaleCandidates[taskID] = task
-							allTasks[task.Slot] = make(map[string]*api.Task)
-						}
-						allTasks[task.Slot][taskID] = task
-					}
+	replicaNodes := make(map[string]NodeInfo)
+	for nodeID := range servReplicas {
+		if node, err := s.nodeSet.nodeInfo(nodeID); err == nil {
+			replicaNodes[nodeID] = node
+			instancesNodes[nodeID] = servReplicas[nodeID]
+			for taskID, task := range node.Tasks {
+				if task.ServiceID == serviceID {
+					slotsMap[task.Slot]++
+					scaleCandidates[taskID] = task
 				}
 			}
-			removable++
 		}
 	}
 	// unassigned and preassigned tasks do not contribute to running counts
-	// but preassigned tasks only works for global service or update task, caused by updating service
-	for _, task := range s.unassignedTasks {
-		if task.ServiceID == serviceID {
-			if _, ok := slotsMap[task.Slot]; !ok {
-				removeSlot[task.Slot] = struct{}{}
+	empty := func(slots map[uint64]struct{}, tasks map[string]*api.Task) bool {
+		for _, t := range tasks {
+			if t.ServiceID == serviceID {
+				if slotsMap[t.Slot] == 0 {
+					removeCandidates[t.Slot] = struct{}{}
+					if counter == len(removeCandidates) {
+						for slot := range removeCandidates {
+							slots[slot] = struct{}{}
+						}
+						return true
+					}
+				}
 			}
 		}
+		return false
 	}
-
-	if len(scaleNodes) == 0 && len(removeSlot) == 0 {
-		return nil
+	if empty(slots, s.unassignedTasks) {
+		return
 	}
-	removable = len(scaleCandidates) - removable
-	toScale := instances - int(required) + len(removeSlot)
-	if toScale < 0 {
-		return nil
-	}
-	if toScale > removable {
-		toScale = removable
+	if empty(slots, s.preassignedTasks) {
+		return
 	}
 
 	drfHeap := s.initDrfMaxHeap()
-	for _, task := range scaleCandidates {
-		s.pipeline.SetTask(task)
-		break
-	}
 	for {
-		if toScale == 0 {
+		if counter == len(removeCandidates) {
 			break
 		}
 		// init drf heap
@@ -1417,17 +1408,9 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required ui
 		var fittest *drfNode
 		for _, task := range scaleCandidates {
 			// filter nodes
-			for _, node := range scaleNodes {
-				if s.pipeline.Process(&node) {
-					n := newMaxDRFNode(node, task.ServiceID, task)
-					if fittest == nil || drfHeap.drfLess(*n, *fittest, *drfHeap) {
-						fittest = n
-					}
-					//drfHeap.nodes = append(drfHeap.nodes, *newMaxDRFNode(node, task.ServiceID, task))
-				}
-			}
-			if fittest != nil {
-				break
+			n := newMaxDRFNode(replicaNodes[task.NodeID], task.ServiceID, task)
+			if fittest == nil || drfHeap.drfLess(*n, *fittest, *drfHeap) {
+				fittest = n
 			}
 		}
 
@@ -1435,26 +1418,32 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, required ui
 			break
 		}
 
-		// get drf result and apply it
-		//fittest := drfHeap.top()
-		toScale--
+		if instancesNodes[fittest.nodeID] == 1 {
+			if replica == serviceReplica {
+				slot := scaleCandidates[fittest.taskID].Slot
+				slotsMap[slot]--
+				if slotsMap[slot] == 0 {
+					delete(slotsMap, slot)
+				}
+				delete(scaleCandidates, fittest.taskID)
+				continue
+			} else {
+				replica--
+			}
+		}
 
 		nodeID, taskID := fittest.nodeID, fittest.taskID
 		slot := scaleCandidates[taskID].Slot
-		removeSlot[slot] = struct{}{}
+		removeCandidates[slot] = struct{}{}
 		delete(slotsMap, slot)
 		delete(scaleCandidates, taskID)
 		instancesNodes[nodeID]--
-		if instancesNodes[nodeID] == 1 {
-			delete(instancesNodes, nodeID)
-			delete(scaleNodes, nodeID)
-		}
 	}
 
-	if len(removeSlot) == 0 {
+	if len(removeCandidates) == 0 {
 		return nil
 	}
-	for slot := range removeSlot {
+	for slot := range removeCandidates {
 		slots[slot] = struct{}{}
 	}
 	return

@@ -186,7 +186,7 @@ func (r *Orchestrator) reconcile(ctx context.Context, service *api.Service) {
 		if strategy == scheduler.ImageBase {
 			// scale down with image-based, simply reduce slots which not change replica distribution
 			// TODO(deljuven) a more complicated policy should be taken later
-			go r.getScaleDownPolicy(ctx, service, specifiedSlots)
+			go r.getScaleDownPolicy(ctx, service, uint64(numSlots)-specifiedSlots)
 		} else {
 			sortedSlots := make([]orchestrator.Slot, 0, numSlots)
 			slotsByNode := make(map[string]int)
