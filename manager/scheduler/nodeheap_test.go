@@ -105,18 +105,18 @@ func TestDRFHeap(t *testing.T) {
 	mapping := make(map[string]map[string]int)
 
 	var drfHeap nodeDRFHeap
-	drfHeap.toAllocReplicas = toAllocReplicas
-	drfHeap.serviceReplicas = serviceReplicas
-	drfHeap.coherenceMapping = mapping
+	drfHeap.toAllocReplicas = &toAllocReplicas
+	drfHeap.serviceReplicas = &serviceReplicas
+	drfHeap.coherenceMapping = &mapping
 	drfHeap.drfLess = func(ni, nj drfNode, h nodeDRFHeap) bool {
 		// replica compare, services with less replicas first
-		toReplicas := h.toAllocReplicas
+		toReplicas := *h.toAllocReplicas
 		if toReplicas != nil {
 			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
 				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
 			}
 			// node compare, if replica is filled, node without same service first
-			replicas := h.serviceReplicas
+			replicas := *h.serviceReplicas
 			_, okI := replicas[ni.serviceID][ni.nodeID]
 			_, okJ := replicas[nj.serviceID][nj.nodeID]
 			if toReplicas[ni.serviceID] > 0 {
@@ -134,7 +134,7 @@ func TestDRFHeap(t *testing.T) {
 			}
 		}
 
-		mapping := h.coherenceMapping
+		mapping := *h.coherenceMapping
 		if _, exists := mapping[ni.serviceID]; !exists {
 			mapping[ni.serviceID] = make(map[string]int)
 		}

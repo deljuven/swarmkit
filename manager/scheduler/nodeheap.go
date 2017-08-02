@@ -122,12 +122,12 @@ func newMaxDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
 // build a min heap for drf algorithm, which is based on max-top fairness
 type nodeDRFHeap struct {
 	nodes           []drfNode
-	toAllocReplicas map[string]int
-	serviceReplicas map[string]map[string]int
+	toAllocReplicas *map[string]int
+	serviceReplicas *map[string]map[string]int
 	// coherence factor mapping, mapping from service to node or image to node or rootfs to node
-	coherenceMapping map[string]map[string]int
+	coherenceMapping *map[string]map[string]int
 	// coherence key mapping, mapping from service to service or image or fs chain
-	factorKeyMapping map[string][]string
+	factorKeyMapping *map[string][]string
 	drfLess          func(drfNode, drfNode, nodeDRFHeap) bool
 }
 
@@ -153,22 +153,4 @@ func (h *nodeDRFHeap) Pop() interface{} {
 	finest := h.nodes[length]
 	h.nodes = h.nodes[:length]
 	return finest
-}
-
-// Prepare used for initiation in test
-func (h *nodeDRFHeap) Prepare(nodes []NodeInfo, tasks []*api.Task, meetsConstraints func(*NodeInfo) bool) {
-	//size := len(tasks)
-	h.nodes = make([]drfNode, 0)
-	for _, node := range nodes {
-		for _, task := range tasks {
-			if meetsConstraints(&node) {
-				h.nodes = append(h.nodes, *newDRFNode(node, task.ServiceID, task))
-			}
-		}
-	}
-	h.toAllocReplicas = make(map[string]int)
-	h.serviceReplicas = make(map[string]map[string]int)
-	h.coherenceMapping = make(map[string]map[string]int)
-	h.factorKeyMapping = make(map[string][]string)
-
 }

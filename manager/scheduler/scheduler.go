@@ -1099,7 +1099,7 @@ func (s *Scheduler) buildNodeSet(tx store.ReadTx, tasksByNode map[string]map[str
 	return nil
 }
 
-func (s *Scheduler) initDrfMinHeap(toAllocReplicas map[string]int, factorKeys map[string][]string, coherenceMapping, serviceReplicas map[string]map[string]int) nodeDRFHeap {
+func (s *Scheduler) initDrfMinHeap(toAllocReplicas *map[string]int, factorKeys *map[string][]string, coherenceMapping, serviceReplicas *map[string]map[string]int) nodeDRFHeap {
 	drfHeap := nodeDRFHeap{}
 	drfHeap.toAllocReplicas = toAllocReplicas
 	drfHeap.factorKeyMapping = factorKeys
@@ -1107,14 +1107,14 @@ func (s *Scheduler) initDrfMinHeap(toAllocReplicas map[string]int, factorKeys ma
 	drfHeap.serviceReplicas = serviceReplicas
 	drfHeap.drfLess = func(ni, nj drfNode, h nodeDRFHeap) bool {
 		// replica compare, services with less replicas first
-		toReplicas := h.toAllocReplicas
+		toReplicas := *h.toAllocReplicas
 		if toReplicas != nil {
 			if toReplicas[ni.serviceID] != toReplicas[nj.serviceID] {
 				return toReplicas[ni.serviceID] > toReplicas[nj.serviceID]
 			}
 			// node compare, if replica constraint is filled, node without same service first
 			// spread across nodes to meet replica requirements
-			replicas := h.serviceReplicas
+			replicas := *h.serviceReplicas
 			_, okI := replicas[ni.serviceID][ni.nodeID]
 			_, okJ := replicas[nj.serviceID][nj.nodeID]
 			if toReplicas[ni.serviceID] > 0 {
@@ -1134,8 +1134,8 @@ func (s *Scheduler) initDrfMinHeap(toAllocReplicas map[string]int, factorKeys ma
 
 		// coherence compare, services with more coherence factor first
 		if h.coherenceMapping != nil && h.factorKeyMapping != nil {
-			coherencesMapping := h.coherenceMapping
-			factorKeysMapping := h.factorKeyMapping
+			coherencesMapping := *h.coherenceMapping
+			factorKeysMapping := *h.factorKeyMapping
 			//coherenceI, coherenceJ := 0,0
 			factorKeysI, okI := factorKeysMapping[ni.key]
 			factorKeysJ, okJ := factorKeysMapping[nj.key]
@@ -1237,7 +1237,7 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, task
 	case ServiceBased:
 		coherenceMapping = s.serviceReplicas
 	}
-	drfHeap := s.initDrfMinHeap(s.toAllocReplicas, s.factorKeys, coherenceMapping, s.serviceReplicas)
+	drfHeap := s.initDrfMinHeap(&s.toAllocReplicas, &s.factorKeys, &coherenceMapping, &s.serviceReplicas)
 
 	for {
 		// init drf heap
