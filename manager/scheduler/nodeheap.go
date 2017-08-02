@@ -91,11 +91,11 @@ func newDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
 	drfNode.taskID = task.ID
 	drfNode.serviceID = serviceID
 	switch SupportFlag {
-	case RootfsBased:
+	case ServiceBased:
 		drfNode.key = serviceID
 	case ImageBased:
 		fallthrough
-	case ServiceBased:
+	case RootfsBased:
 		drfNode.key = task.Spec.GetContainer().Image
 	}
 	drfNode.dominantReserved, drfNode.dominantAvailable = getDrfResource(node, task)
@@ -108,11 +108,11 @@ func newMaxDRFNode(node NodeInfo, serviceID string, task *api.Task) *drfNode {
 	drfNode.taskID = task.ID
 	drfNode.serviceID = serviceID
 	switch SupportFlag {
-	case RootfsBased:
+	case ServiceBased:
 		drfNode.key = serviceID
 	case ImageBased:
 		fallthrough
-	case ServiceBased:
+	case RootfsBased:
 		drfNode.key = task.Spec.GetContainer().Image
 	}
 	drfNode.dominantReserved, drfNode.dominantAvailable = getMaxDrfResource(node, task)
