@@ -130,27 +130,3 @@ type nodeDRFHeap struct {
 	factorKeyMapping *map[string][]string
 	drfLess          func(drfNode, drfNode, nodeDRFHeap) bool
 }
-
-func (h nodeDRFHeap) Len() int {
-	return len(h.nodes)
-}
-
-func (h nodeDRFHeap) Swap(i, j int) {
-	h.nodes[i], h.nodes[j] = h.nodes[j], h.nodes[i]
-}
-
-func (h nodeDRFHeap) Less(i, j int) bool {
-	// reversed to make a drf-heap
-	return h.drfLess(h.nodes[i], h.nodes[j], h)
-}
-
-func (h *nodeDRFHeap) Push(x interface{}) {
-	h.nodes = append(h.nodes, x.(drfNode))
-}
-
-func (h *nodeDRFHeap) Pop() interface{} {
-	length := len(h.nodes) - 1
-	finest := h.nodes[length]
-	h.nodes = h.nodes[:length]
-	return finest
-}

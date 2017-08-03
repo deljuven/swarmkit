@@ -326,6 +326,7 @@ func (s *Scheduler) handleScaleDown(ctx context.Context) {
 					Slots:    slots,
 					Required: required,
 				}:
+					log.G(ctx).Debugf("(*Scheduler).handleScaleDown scale service %v down with slots %v to meet requirement %v", service, slots, required)
 				case <-ctx.Done():
 					log.G(ctx).Errorf("(*Scheduler).handleScaleDown is no longer running for %v", ctx.Err())
 				}
@@ -1353,6 +1354,7 @@ func (s *Scheduler) scheduleImageBaseTasks(ctx context.Context, counts int, task
 // required is the slot number needed to be scaled down. Following Try It Best strategy
 func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, down uint64) (slots map[uint64]struct{}) {
 	removeCandidates := make(map[uint64]struct{})
+	slots = make(map[uint64]struct{})
 
 	counter := int(down)
 	servReplicas := s.serviceReplicas[serviceID]
@@ -1398,18 +1400,17 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, down uint64
 		return
 	}
 
-	drfHeap := s.initDrfMaxHeap()
+	drfLess := drfCompare()
 	for {
 		if counter == len(removeCandidates) {
 			break
 		}
 		// init drf heap
-		drfHeap.nodes = make([]drfNode, 0)
 		var fittest *drfNode
 		for _, task := range scaleCandidates {
 			// filter nodes
 			n := newMaxDRFNode(replicaNodes[task.NodeID], task.ServiceID, task)
-			if fittest == nil || drfHeap.drfLess(*n, *fittest, *drfHeap) {
+			if fittest == nil || drfLess(*n, *fittest) {
 				fittest = n
 			}
 		}
@@ -1449,9 +1450,8 @@ func (s *Scheduler) scaleDown(ctx context.Context, serviceID string, down uint64
 	return
 }
 
-func (s *Scheduler) initDrfMaxHeap() *nodeDRFHeap {
-	drfHeap := &nodeDRFHeap{}
-	drfHeap.drfLess = func(nj, ni drfNode, h nodeDRFHeap) bool {
+func drfCompare() func(drfNode, drfNode) bool {
+	return func(nj, ni drfNode) bool {
 		// drf compare
 		reservedI, availableI := ni.dominantReserved, ni.dominantAvailable
 		reservedJ, availableJ := nj.dominantReserved, nj.dominantAvailable
@@ -1476,5 +1476,4 @@ func (s *Scheduler) initDrfMaxHeap() *nodeDRFHeap {
 			return false
 		}
 	}
-	return drfHeap
 }
