@@ -295,6 +295,7 @@ func Do(ctx context.Context, task *api.Task, ctlr Controller) (*api.TaskStatus, 
 			return fatal(err)
 		}
 
+		log.G(ctx).Infof("ALCLOG: task %v for service %v shutdown at %v", task.ID, task.ServiceID, time.Now())
 		return transition(api.TaskStateShutdown, "shutdown")
 	}
 
@@ -322,6 +323,7 @@ func Do(ctx context.Context, task *api.Task, ctlr Controller) (*api.TaskStatus, 
 			return fatal(err)
 		}
 
+		log.G(ctx).Infof("ALCLOG: task %v for service %v completed at %v", task.ID, task.ServiceID, time.Now())
 		return transition(api.TaskStateCompleted, "finished")
 	}
 
